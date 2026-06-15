@@ -35,3 +35,7 @@ Thumbs.db
 data/
 volumes/
 data/runtime/
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+.env.*.local

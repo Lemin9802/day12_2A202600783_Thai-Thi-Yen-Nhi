@@ -1,6 +1,11 @@
 from __future__ import annotations
-
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from pathlib import Path
+import re
+import json
+import uuid
+from datetime import datetime
+import os
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.agent import generate_answer
@@ -24,8 +29,11 @@ from backend.schemas import (
     CreateChatRequest,
     LinkAttachmentRequest,
     RenameChatRequest,
+    GenerateTitleRequest,
+    GenerateTitleResponse,
     Source,
 )
+from backend.title import generate_chat_title
 from backend.store import (
     add_message,
     create_chat,
@@ -37,15 +45,265 @@ from backend.store import (
     rewrite_with_memory,
 )
 
-app = FastAPI(title=f"{APP_NAME} Backend", version="0.3.0")
+_DATASET_SOURCE_REGISTRY = None
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def _load_dataset_source_registry():
+    global _DATASET_SOURCE_REGISTRY
+    if _DATASET_SOURCE_REGISTRY is not None:
+        return _DATASET_SOURCE_REGISTRY
+
+    registry = {}
+    dataset_path = Path(__file__).resolve().parents[1] / "data" / "maithuylaw_dataset" / "data" / "index" / "rag_chunks.json"
+
+    try:
+        chunks = json.loads(dataset_path.read_text(encoding="utf-8"))
+    except Exception:
+        _DATASET_SOURCE_REGISTRY = registry
+        return registry
+
+    def add_key(key, info):
+        key = str(key or "").strip()
+        if key and key not in registry:
+            registry[key] = info
+
+    for chunk in chunks:
+        meta = chunk.get("metadata") or {}
+        doc_id = (
+            meta.get("doc_id")
+            or meta.get("source_id")
+            or meta.get("id")
+            or chunk.get("doc_id")
+            or ""
+        )
+        title = (
+            meta.get("title")
+            or meta.get("source_title")
+            or chunk.get("title")
+            or meta.get("source")
+            or doc_id
+        )
+        url = (
+            meta.get("canonical_url")
+            or meta.get("url")
+            or meta.get("source_url")
+            or meta.get("link")
+            or chunk.get("canonical_url")
+            or chunk.get("url")
+            or ""
+        )
+        publisher = meta.get("publisher") or chunk.get("publisher") or ""
+        official_domain = meta.get("official_domain") or chunk.get("official_domain") or ""
+        source_type = meta.get("source_type") or meta.get("type") or chunk.get("source_type") or ""
+
+        info = {
+            "doc_id": doc_id,
+            "title": title,
+            "canonical_url": url,
+            "url": url,
+            "source_url": url,
+            "link": url,
+            "publisher": publisher,
+            "official_domain": official_domain,
+            "source_type": source_type,
+        }
+
+        add_key(doc_id, info)
+        add_key(title, info)
+        add_key(meta.get("source"), info)
+        add_key(meta.get("source_title"), info)
+
+    _DATASET_SOURCE_REGISTRY = registry
+    return registry
+
+def _source_to_dict(source):
+    if source is None:
+        return {}
+    if isinstance(source, dict):
+        return dict(source)
+    if hasattr(source, "model_dump"):
+        return source.model_dump()
+    if hasattr(source, "dict"):
+        return source.dict()
+    return {
+        key: getattr(source, key)
+        for key in dir(source)
+        if not key.startswith("_") and key in {"title", "doc_id", "source_type", "url", "canonical_url", "source_url", "link", "publisher", "official_domain", "score"}
+    }
+
+def _normalize_response_sources(sources):
+    registry = _load_dataset_source_registry()
+    normalized = []
+    seen = set()
+
+    for index, source in enumerate(sources or []):
+        item = _source_to_dict(source)
+        meta = item.get("metadata") or {}
+
+        doc_id = (
+            item.get("doc_id")
+            or item.get("source_id")
+            or meta.get("doc_id")
+            or meta.get("source_id")
+            or ""
+        )
+
+        title = (
+            item.get("title")
+            or item.get("source_title")
+            or meta.get("title")
+            or meta.get("source_title")
+            or meta.get("source")
+            or item.get("source")
+            or doc_id
+            or f"S{index + 1}"
+        )
+
+        lookup = (
+            registry.get(str(doc_id).strip())
+            or registry.get(str(title).strip())
+            or registry.get(str(item.get("source") or "").strip())
+            or registry.get(str(meta.get("source") or "").strip())
+            or {}
+        )
+
+        url = (
+            item.get("canonical_url")
+            or item.get("url")
+            or item.get("source_url")
+            or item.get("link")
+            or meta.get("canonical_url")
+            or meta.get("url")
+            or meta.get("source_url")
+            or meta.get("link")
+            or lookup.get("canonical_url")
+            or lookup.get("url")
+            or lookup.get("source_url")
+            or lookup.get("link")
+            or ""
+        )
+
+        final_doc_id = lookup.get("doc_id") or doc_id
+        final_title = lookup.get("title") or title
+        final_type = lookup.get("source_type") or item.get("source_type") or meta.get("source_type") or meta.get("type") or ""
+        final_publisher = lookup.get("publisher") or item.get("publisher") or meta.get("publisher") or ""
+        final_domain = lookup.get("official_domain") or item.get("official_domain") or meta.get("official_domain") or ""
+
+        dedupe_key = (
+            str(url).strip().lower()
+            or str(final_doc_id).strip().lower()
+            or str(final_title).strip().lower()
+        )
+
+        if dedupe_key and dedupe_key in seen:
+            continue
+        if dedupe_key:
+            seen.add(dedupe_key)
+
+        normalized.append({
+            "source_id": final_doc_id or final_title or f"S{index + 1}",
+            "doc_id": final_doc_id,
+            "title": final_title,
+            "source_type": final_type,
+            "publisher": final_publisher,
+            "official_domain": final_domain,
+            "canonical_url": url,
+            "url": url,
+            "source_url": url,
+            "link": url,
+        })
+
+    return normalized[:6]
+
+def _reduce_single_source_citation_spam(answer: str, sources: list[dict]) -> str:
+    text = str(answer or "")
+
+    try:
+        if len(sources or []) != 1:
+            return text
+
+        if text.count("[S1]") <= 4:
+            return text
+
+        lines = text.splitlines()
+        output = []
+        kept_in_current_section = False
+        in_references = False
+
+        for line in lines:
+            stripped = line.strip()
+            lower = stripped.lower()
+
+            is_heading = stripped.startswith("#") or lower in {
+                "nguồn tham khảo",
+                "### nguồn tham khảo",
+                "## nguồn tham khảo",
+                "references",
+                "### references",
+                "## references",
+            }
+
+            if is_heading:
+                kept_in_current_section = False
+
+            if "nguồn tham khảo" in lower or lower == "references":
+                in_references = True
+            elif is_heading and in_references and "nguồn tham khảo" not in lower and lower != "references":
+                in_references = False
+
+            if "[S1]" in line and not in_references:
+                if kept_in_current_section:
+                    line = line.replace(" [S1]", "")
+                    line = line.replace("[S1]", "")
+                    line = re.sub(r"\s+([,.])", r"\1", line)
+                else:
+                    kept_in_current_section = True
+
+            output.append(line)
+
+        text = "\n".join(output)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    except Exception:
+        return text
+
+def _normalize_answer_citations(answer: str, sources: list[dict]) -> str:
+    text = str(answer or "")
+    try:
+        count = len(sources or [])
+        group_pattern = re.compile(r"\[(?:S\d+\s*(?:,\s*S\d+\s*)*)\]")
+
+        if count <= 0:
+            return group_pattern.sub("", text)
+
+        def fix_group(match):
+            raw = match.group(0)
+            nums = [int(n) for n in re.findall(r"S(\d+)", raw)]
+
+            if count == 1:
+                return "[S1]"
+
+            valid = []
+            for n in nums:
+                if 1 <= n <= count and n not in valid:
+                    valid.append(n)
+
+            if not valid:
+                return ""
+
+            return "[" + ", ".join(f"S{n}" for n in valid) + "]"
+
+        text = group_pattern.sub(fix_group, text)
+
+        if count == 1:
+            text = re.sub(r"\[S1\](?:\s*,\s*\[S1\])+", "[S1]", text)
+            text = re.sub(r"(\[S1\]\s*){2,}", "[S1] ", text)
+
+        text = re.sub(r"\s+([,.])", r"\1", text)
+        text = re.sub(r",\s*,", ",", text)
+        return text
+    except Exception:
+        return text
 
 
 def _source_label(item: dict, index: int) -> Source:
@@ -58,7 +316,6 @@ def _source_label(item: dict, index: int) -> Source:
         score=float(item.get("score", 0.0)),
     )
 
-
 def _attachment_source(att: dict, index: int) -> Source:
     return Source(
         source_id=f"A{index}",
@@ -68,13 +325,11 @@ def _attachment_source(att: dict, index: int) -> Source:
         score=float(att.get("domain_score") or 0.0),
     )
 
-
 def _compact(text: str, max_chars: int = 700) -> str:
     cleaned = " ".join(str(text or "").split())
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[: max_chars - 3].rstrip() + "..."
-
 
 def _summarize_attachment(att: dict) -> list[str]:
     text = att.get("text", "")
@@ -84,21 +339,17 @@ def _summarize_attachment(att: dict) -> list[str]:
         selected = [_compact(text, 500)]
     return [f"- {s}." for s in selected]
 
-
 def _wants_summary(message: str) -> bool:
     q = message.lower()
     return any(x in q for x in ["tóm tắt", "tom tat", "ý chính", "y chinh", "nội dung chính", "noi dung chinh"])
-
 
 def _wants_source_check(message: str) -> bool:
     q = message.lower()
     return any(x in q for x in ["chính thống", "chinh thong", "đáng tin", "dang tin", "kiểm tra nguồn", "kiem tra nguon", "nguồn này"])
 
-
 def _wants_compare_law(message: str) -> bool:
     q = message.lower()
     return any(x in q for x in ["so sánh", "so sanh", "đối chiếu", "doi chieu", "theo luật", "theo luat", "quy định"])
-
 
 def _format_dataset_answer(results: list[dict]) -> str:
     if not results or float(results[0].get("score", 0.0)) < MIN_SCORE:
@@ -123,7 +374,6 @@ def _format_dataset_answer(results: list[dict]) -> str:
         "Thông tin này chỉ phục vụ tra cứu từ nguồn đã thu thập, không thay thế tư vấn pháp lý chính thức.",
     ]
     return "\n".join(lines).strip()
-
 
 def _format_attachment_answer(message: str, attachments: list[dict], dataset_results: list[dict]) -> str:
     usable = [a for a in attachments if a.get("verdict") in {"accepted", "needs_review"}]
@@ -172,29 +422,160 @@ def _format_attachment_answer(message: str, attachments: list[dict], dataset_res
 
     return "\n".join(lines).strip()
 
+# --- MaiThuyLaw language-aware user messages ---
+def _request_language(req) -> str:
+    value = getattr(req, "language", "vi")
+    return "en" if str(value).lower().startswith("en") else "vi"
 
-@app.get("/")
-def root() -> dict:
+def _scope_refusal(language: str = "vi") -> str:
+    if str(language).lower().startswith("en"):
+        return (
+            "I can help with Vietnamese law, policy, and verified official news related to drug-related matters. "
+            "Please ask within that scope, for example about Vietnamese legal rules, prevention policy, rehabilitation, "
+            "or official source checking."
+        )
+
+    return (
+        "Mình chỉ hỗ trợ tra cứu thông tin pháp luật, chính sách và tin tức chính thống liên quan đến ma túy. "
+        "Bạn hãy đặt câu hỏi trong phạm vi này nhé."
+    )
+
+
+app = FastAPI(title="MaiThuyLaw AI", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+
+# FAST_CHAT_HISTORY_ROUTES
+CHAT_HISTORY_PATH = Path("data/runtime/web_chats.json")
+
+
+def _chat_now():
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _load_web_chats():
+    try:
+        if CHAT_HISTORY_PATH.exists():
+            return json.loads(CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_web_chats(store):
+    CHAT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CHAT_HISTORY_PATH.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _chat_summary(chat):
+    messages = chat.get("messages") or []
     return {
-        "app": APP_NAME,
-        "status": "ok",
-        "docs": "/docs",
-        "health": "/health",
+        "id": chat.get("id"),
+        "chat_id": chat.get("id"),
+        "title": chat.get("title") or "Cuộc trò chuyện mới",
+        "created_at": chat.get("created_at"),
+        "updated_at": chat.get("updated_at"),
+        "message_count": len(messages),
     }
 
 
-@app.get("/health")
-def health() -> dict:
-    return {
-        "status": "healthy",
-        "app": APP_NAME,
-        "dataset": dataset_summary(),
-    }
+def _save_chat_message(user_id, chat_id, role, content, sources=None, title=None):
+    store = _load_web_chats()
+    user_store = store.setdefault(user_id or "demo-user", {})
+    now = _chat_now()
+
+    chat = user_store.setdefault(chat_id, {
+        "id": chat_id,
+        "chat_id": chat_id,
+        "title": title or "Cuộc trò chuyện mới",
+        "messages": [],
+        "created_at": now,
+        "updated_at": now,
+    })
+
+    if title and (not chat.get("title") or chat.get("title") == "Cuộc trò chuyện mới"):
+        chat["title"] = title
+
+    chat["messages"].append({
+        "id": f"{role}-{uuid.uuid4()}",
+        "role": role,
+        "content": content or "",
+        "sources": sources or [],
+        "created_at": now,
+    })
+    chat["updated_at"] = now
+    _save_web_chats(store)
 
 
-@app.get("/api/dataset/summary")
-def api_dataset_summary() -> dict:
-    return dataset_summary()
+@app.get("/api/chats")
+async def fast_list_chats(user_id: str = "demo-user"):
+    store = _load_web_chats()
+    user_store = store.get(user_id or "demo-user", {})
+    chats = sorted(
+        (_chat_summary(chat) for chat in user_store.values()),
+        key=lambda item: item.get("updated_at") or "",
+        reverse=True,
+    )
+    return {"chats": chats}
+
+
+@app.post("/api/chats")
+async def fast_create_chat(payload: dict = Body(default_factory=dict)):
+    store = _load_web_chats()
+    user_id = str(payload.get("user_id") or "demo-user")
+    user_store = store.setdefault(user_id, {})
+
+    now = _chat_now()
+    chat_id = str(payload.get("chat_id") or payload.get("id") or uuid.uuid4())
+    title = str(payload.get("title") or "Cuộc trò chuyện mới")
+
+    chat = user_store.setdefault(chat_id, {
+        "id": chat_id,
+        "chat_id": chat_id,
+        "title": title,
+        "messages": [],
+        "created_at": now,
+        "updated_at": now,
+    })
+
+    chat["title"] = chat.get("title") or title
+    chat["updated_at"] = now
+    _save_web_chats(store)
+
+    return chat
+
+
+@app.get("/api/chats/{chat_id}")
+async def fast_get_chat(chat_id: str, user_id: str = "demo-user"):
+    store = _load_web_chats()
+    chat = store.get(user_id or "demo-user", {}).get(chat_id)
+
+    if not chat:
+        now = _chat_now()
+        chat = {
+            "id": chat_id,
+            "chat_id": chat_id,
+            "title": "Cuộc trò chuyện mới",
+            "messages": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    return chat
+
+
 
 
 @app.post("/api/chats", response_model=ChatDetail)
@@ -202,12 +583,10 @@ def api_create_chat(req: CreateChatRequest, request: Request, x_api_key: str | N
     auth_and_quota(request, user_id=req.user_id, x_api_key=x_api_key)
     return create_chat(user_id=req.user_id, title=req.title)
 
-
 @app.get("/api/chats", response_model=list[ChatSummary])
 def api_list_chats(request: Request, user_id: str = Query("demo-user"), x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> list[dict]:
     auth_and_quota(request, user_id=user_id, x_api_key=x_api_key)
     return list_chats(user_id=user_id)
-
 
 @app.get("/api/chats/{chat_id}", response_model=ChatDetail)
 def api_get_chat(chat_id: str, request: Request, user_id: str = Query("demo-user"), x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
@@ -217,7 +596,6 @@ def api_get_chat(chat_id: str, request: Request, user_id: str = Query("demo-user
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
 
-
 @app.patch("/api/chats/{chat_id}", response_model=ChatDetail)
 def api_rename_chat(chat_id: str, req: RenameChatRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
     auth_and_quota(request, user_id=req.user_id, x_api_key=x_api_key)
@@ -226,7 +604,6 @@ def api_rename_chat(chat_id: str, req: RenameChatRequest, request: Request, x_ap
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
 
-
 @app.delete("/api/chats/{chat_id}")
 def api_delete_chat(chat_id: str, request: Request, user_id: str = Query("demo-user"), x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
     auth_and_quota(request, user_id=user_id, x_api_key=x_api_key)
@@ -234,7 +611,6 @@ def api_delete_chat(chat_id: str, request: Request, user_id: str = Query("demo-u
     if not ok:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"deleted": True, "chat_id": chat_id}
-
 
 @app.post("/api/upload-check")
 async def api_upload_check(request: Request, file: UploadFile = File(...), x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
@@ -255,7 +631,6 @@ async def api_upload_check(request: Request, file: UploadFile = File(...), x_api
         "size_bytes": extracted["size_bytes"],
         **evaluation,
     }
-
 
 @app.post("/api/attachments/upload")
 async def api_attachment_upload(
@@ -286,7 +661,6 @@ async def api_attachment_upload(
         size_bytes=extracted["size_bytes"],
     )
 
-
 @app.post("/api/attachments/link")
 async def api_attachment_link(req: LinkAttachmentRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
     auth_and_quota(request, user_id=req.user_id, x_api_key=x_api_key)
@@ -312,7 +686,6 @@ async def api_attachment_link(req: LinkAttachmentRequest, request: Request, x_ap
         size_bytes=len(fetched["text"].encode("utf-8")),
     )
 
-
 @app.get("/api/attachments/{attachment_id}")
 def api_get_attachment(attachment_id: str, request: Request, user_id: str = Query("demo-user"), x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
     auth_and_quota(request, user_id=user_id, x_api_key=x_api_key)
@@ -321,12 +694,10 @@ def api_get_attachment(attachment_id: str, request: Request, user_id: str = Quer
         raise HTTPException(status_code=404, detail="Attachment not found")
     return item
 
-
 @app.get("/api/chats/{chat_id}/attachments")
 def api_list_chat_attachments(chat_id: str, request: Request, user_id: str = Query("demo-user"), x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> list[dict]:
     auth_and_quota(request, user_id=user_id, x_api_key=x_api_key)
     return list_attachments_for_chat(chat_id, user_id=user_id)
-
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> ChatResponse:
@@ -389,9 +760,7 @@ async def chat(req: ChatRequest, request: Request, x_api_key: str | None = Heade
 
     if safety_reason:
         answer = (
-            "Mình không thể hỗ trợ nội dung có thể giúp lách luật, né tránh xử lý, che giấu hành vi "
-            "hoặc thực hiện hành vi liên quan đến ma túy. Mình có thể giúp giải thích quy định pháp luật, "
-            "hậu quả pháp lý, chính sách phòng chống ma túy hoặc nguồn tin chính thống."
+            "Mình không thể hỗ trợ theo hướng đó vì nội dung có thể bị lạm dụng hoặc không phù hợp với quy định pháp luật. Mình có thể hỗ trợ bạn theo hướng an toàn hơn, như tra cứu quy định liên quan, hậu quả pháp lý, chính sách phòng chống ma túy, cai nghiện hoặc kiểm tra nguồn tin chính thống."
         )
         add_message(chat_id, "user", message, req.user_id)
         add_message(chat_id, "assistant", answer, req.user_id)
@@ -433,29 +802,67 @@ async def chat(req: ChatRequest, request: Request, x_api_key: str | None = Heade
     dataset_sources = [_source_label(item, i) for i, item in enumerate(dataset_results, start=1)]
     attachment_sources = [_attachment_source(att, i) for i, att in enumerate(attachments, start=1)]
 
-    answer = await generate_answer(
+    answer = generate_answer(
         message=message,
         dataset_results=dataset_results,
         attachments=attachments,
+        language=getattr(req, "language", "vi")
     )
 
     if not attachments and wants_realtime(message) and not realtime_enabled():
-        answer = (
-            "## Cần nguồn realtime để trả lời chắc chắn\n"
-            + realtime_unavailable_answer()
-            + "\n\n## Thông tin từ dataset hiện có\n"
-            + answer
-        )
-
-    if retrieval_query != message and not attachment_text:
-        answer += "\n\n_Ngữ cảnh hội thoại trước đó đã được dùng để hiểu câu hỏi tiếp theo._"
+        answer = realtime_unavailable_answer(locals().get("language") or "vi")
 
     add_message(chat_id, "user", message, req.user_id)
     add_message(chat_id, "assistant", answer, req.user_id)
 
+    normalized_sources = _normalize_response_sources(attachment_sources + dataset_sources)
+    safe_answer = _normalize_answer_citations(answer, normalized_sources)
+    safe_answer = _reduce_single_source_citation_spam(safe_answer, normalized_sources)
+
+    normalized_sources = _normalize_response_sources(attachment_sources + dataset_sources)
+    safe_answer = _normalize_answer_citations(answer, normalized_sources)
+    safe_answer = _reduce_single_source_citation_spam(safe_answer, normalized_sources)
+
+    try:
+        _save_chat_message(req.user_id, chat_id, "user", req.message, [])
+        _save_chat_message(req.user_id, chat_id, "assistant", safe_answer, normalized_sources)
+    except Exception:
+        pass
+
     return ChatResponse(
         chat_id=chat_id,
-        answer=answer,
-        sources=attachment_sources + dataset_sources,
-        refused=False,
+        answer=safe_answer,
+        sources=normalized_sources,
     )
+
+@app.post("/api/chats/{chat_id}/generate-title", response_model=GenerateTitleResponse)
+async def generate_title_for_chat(
+    chat_id: str,
+    payload: GenerateTitleRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+):
+    expected_key = os.getenv("MAITHUYLAW_API_KEY") or os.getenv("AGENT_API_KEY") or "dev-maithuylaw-key"
+    if not x_api_key or x_api_key != expected_key:
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key.")
+
+    language = "en" if payload.language.lower().startswith("en") else "vi"
+    title = generate_chat_title(payload.message, language)
+
+    # Best-effort persistence. The frontend can still use the returned title immediately.
+    for args in (
+        (chat_id, payload.user_id, title),
+        (payload.user_id, chat_id, title),
+        (chat_id, title, payload.user_id),
+        (chat_id, title),
+    ):
+        try:
+            updated = rename_chat(*args)
+            if updated:
+                break
+        except TypeError:
+            continue
+        except Exception:
+            break
+
+    return GenerateTitleResponse(chat_id=chat_id, title=title)
+

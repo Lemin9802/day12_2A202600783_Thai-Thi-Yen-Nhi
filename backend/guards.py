@@ -38,3 +38,39 @@ def detect_safety_issue(text: str) -> str | None:
         if re.search(pattern, q):
             return "Câu hỏi có dấu hiệu yêu cầu lách luật, né tránh xử lý, che giấu hành vi hoặc hỗ trợ hành vi liên quan đến ma túy."
     return None
+
+
+# --- MaiThuyLaw English domain wrapper ---
+_MAITHUYLAW_ORIGINAL_IS_IN_DOMAIN = is_in_domain
+
+_MAITHUYLAW_EN_DOMAIN_TERMS = {
+    "drug",
+    "drugs",
+    "drug news",
+    "drug law",
+    "drug policy",
+    "drug prevention",
+    "drug control",
+    "drug-related",
+    "narcotic",
+    "narcotics",
+    "substance abuse",
+    "addiction",
+    "addict",
+    "rehabilitation",
+    "compulsory rehabilitation",
+    "detoxification",
+    "harm reduction",
+    "methamphetamine",
+    "heroin",
+    "cannabis",
+    "vietnam drug",
+    "vietnamese drug",
+}
+
+
+def is_in_domain(text: str) -> bool:
+    lowered = (text or "").lower()
+    if any(term in lowered for term in _MAITHUYLAW_EN_DOMAIN_TERMS):
+        return True
+    return _MAITHUYLAW_ORIGINAL_IS_IN_DOMAIN(text)

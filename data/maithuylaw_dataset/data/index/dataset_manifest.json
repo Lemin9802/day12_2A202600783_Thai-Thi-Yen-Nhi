@@ -177,5 +177,22 @@
       "source_type": "news",
       "chunks": 2
     }
-  ]
+  ],
+  "updated_at": "2026-06-15T10:49:41",
+  "source_schema_version": "canonical-url-v1",
+  "total_chunks": 224,
+  "total_documents": 27,
+  "legal_url_normalization": {
+    "patched_legal_chunks": 182,
+    "dropped_chunks": 6,
+    "dropped_doc_ids": [
+      "legal-bo-luat-hinh-su-2015"
+    ],
+    "canonical_domain": "vbpl.vn"
+  },
+  "chunks_by_source_type": {
+    "legal": 182,
+    "news": 42,
+    "other": 0
+  }
 }
