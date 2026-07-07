@@ -190,15 +190,35 @@ def _is_sanction_question(question: str) -> bool:
     ))
 
 
-def _has_direct_sanction_evidence(items: list[Any]) -> bool:
-    direct_subject = (
+def _asks_unlawful_use(question: str) -> bool:
+    q = str(question or "").lower()
+    return any(term in q for term in (
+        "sử dụng trái phép", "su dung trai phep",
+        "sử dụng ma túy trái phép", "su dung ma tuy trai phep",
+    ))
+
+
+def _has_direct_sanction_evidence(question: str, items: list[Any]) -> bool:
+    unlawful_use_query = _asks_unlawful_use(question)
+
+    unlawful_use_subject = (
+        "sử dụng trái phép", "su dung trai phep",
+        "sử dụng ma túy trái phép", "su dung ma tuy trai phep",
+        "người sử dụng trái phép", "nguoi su dung trai phep",
+    )
+    general_subject = (
         "sử dụng trái phép", "su dung trai phep", "người sử dụng", "nguoi su dung",
         "người nghiện", "nguoi nghien", "nghiện ma túy", "nghien ma tuy",
     )
-    consequence = (
+    direct_legal_consequence = (
         "xử phạt", "xu phat", "bị phạt", "bi phat", "phạt tiền", "phat tien",
-        "trách nhiệm hình sự", "trach nhiem hinh su", "biện pháp xử lý hành chính",
-        "bien phap xu ly hanh chinh", "cai nghiện bắt buộc", "cai nghien bat buoc",
+        "cảnh cáo", "canh cao", "trách nhiệm hình sự", "trach nhiem hinh su",
+        "xử lý vi phạm hành chính", "xu ly vi pham hanh chinh",
+        "mức phạt", "muc phat", "hình phạt", "hinh phat",
+    )
+    rehab_consequence = (
+        "biện pháp xử lý hành chính", "bien phap xu ly hanh chinh",
+        "cai nghiện bắt buộc", "cai nghien bat buoc",
         "đưa vào cơ sở cai nghiện", "dua vao co so cai nghien",
     )
 
@@ -209,7 +229,16 @@ def _has_direct_sanction_evidence(items: list[Any]) -> bool:
             _text_from_item(item),
             " ".join(str(v) for v in meta.values()),
         ]).lower()
-        if any(term in blob for term in direct_subject) and any(term in blob for term in consequence):
+
+        if unlawful_use_query:
+            # A document about "người nghiện" / compulsory rehabilitation is not
+            # a direct basis for the exact sanction of unlawful drug use unless it
+            # explicitly covers unlawful use and a concrete legal consequence.
+            if any(term in blob for term in unlawful_use_subject) and any(term in blob for term in direct_legal_consequence):
+                return True
+            continue
+
+        if any(term in blob for term in general_subject) and any(term in blob for term in direct_legal_consequence + rehab_consequence):
             return True
     return False
 
@@ -278,7 +307,7 @@ def _build_attachment_context(items: list[Any]) -> str:
 
 
 def _fallback_answer(question: str, retrieved: list[Any], attachments: list[Any], language: str) -> str:
-    if _is_sanction_question(question) and not attachments and not _has_direct_sanction_evidence(retrieved):
+    if _is_sanction_question(question) and not attachments and not _has_direct_sanction_evidence(question, retrieved):
         return _insufficient_sanction_answer(language)
 
     context = _build_attachment_context(attachments) or _build_context(retrieved, "S")
@@ -428,7 +457,7 @@ Hãy trả lời như một sản phẩm pháp luật AI dành cho người dùn
         response = client.models.generate_content(model=model, contents=prompt)
         answer = _clean_answer(getattr(response, "text", "") or "")
         if answer:
-            if _is_sanction_question(question) and not attachment_list and not _has_direct_sanction_evidence(retrieved_list):
+            if _is_sanction_question(question) and not attachment_list and not _has_direct_sanction_evidence(question, retrieved_list):
                 return _insufficient_sanction_answer(language)
             return answer
     except Exception:
