@@ -6,7 +6,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env.local", override=False)
 load_dotenv(ROOT_DIR / ".env", override=False)
 
-
 import os
 import re
 from typing import Any
@@ -17,103 +16,30 @@ except Exception:  # pragma: no cover
     genai = None
 
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
+
 
 def _clean_raw_chunk_text(value: str) -> str:
-    value = re.sub(r"\s+", " ", str(value or "")).strip()
-    value = re.sub(r"^[,.;:\-\s]+", "", value)
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"^[,.;:\-\s]+", "", text)
+    text = re.sub(r"\b(score|source_type)\s*=\s*[\w.:-]+", "", text, flags=re.I)
+    text = re.sub(r"\((legal|news|realtime|attachment)[^)]*score\s*=\s*[\d.]+[^)]*\)", "", text, flags=re.I)
+    text = text.strip()
 
-    # If a chunk starts mid-word/mid-sentence, trim to the first reasonable legal marker.
     markers = [
-        "Điều ",
-        "Khoản ",
-        "Quyết định ",
-        "Nghị định ",
-        "Thông tư ",
-        "Pháp lệnh ",
-        "Theo ",
-        "Ủy ban ",
-        "Lực lượng ",
-        "Kỳ đánh giá",
-        "Địa bàn ",
-        "Tuyến ",
+        "Điều ", "Khoản ", "Quyết định ", "Nghị định ", "Thông tư ", "Pháp lệnh ",
+        "Theo ", "Ủy ban ", "Bộ Công an ", "Tòa án ", "Cơ quan ", "Người ",
+        "Trường hợp ", "Hồ sơ ", "Thủ tục ", "Kỳ đánh giá", "Địa bàn ", "Tuyến ",
     ]
-
     first = None
     for marker in markers:
-        idx = value.find(marker)
+        idx = text.find(marker)
         if idx > 0:
             first = idx if first is None else min(first, idx)
-
     if first is not None:
-        value = value[first:].strip()
+        text = text[first:].strip()
 
-    # Drop badly truncated fragments that still begin lowercase.
-    if value and value[0].islower():
-        parts = re.split(r"(?<=[.!?])\s+", value)
-        parts = [p for p in parts if p and not p[0].islower()]
-        value = " ".join(parts).strip() or value
-
-    return value
-
-
-def _extract_clean_sentences(chunks, limit: int = 5) -> list[str]:
-    sentences = []
-    seen = set()
-
-    for item in chunks or []:
-        if isinstance(item, dict):
-            raw = item.get("text") or item.get("content") or item.get("page_content") or ""
-        else:
-            raw = getattr(item, "text", "") or getattr(item, "content", "") or str(item)
-
-        cleaned = _clean_raw_chunk_text(raw)
-        for sentence in re.split(r"(?<=[.!?])\s+", cleaned):
-            sentence = sentence.strip(" -•\t\r\n")
-            if len(sentence) < 45:
-                continue
-            if sentence and sentence[0].islower():
-                continue
-            key = sentence[:120].lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            sentences.append(sentence)
-
-            if len(sentences) >= limit:
-                return sentences
-
-    return sentences
-
-
-def _clean_fallback_answer(answer: str) -> str:
-    text = str(answer or "")
-
-    bad_markers = [
-        "Mình tìm thấy một số thông tin liên quan trong tài liệu hiện có.",
-        "Thông tin từ dataset hiện có",
-        "Trả lời từ dataset",
-        "Đối chiếu",
-    ]
-
-    for marker in bad_markers:
-        text = text.replace(marker, "")
-
-    lines = []
-    for line in text.splitlines():
-        stripped = line.strip()
-
-        # Remove raw broken bullets such as "- iên tỉnh..." / "- ó thường xuyên..."
-        if stripped.startswith("- "):
-            body = stripped[2:].strip()
-            if body and body[0].islower():
-                continue
-            if len(body) < 35:
-                continue
-
-        lines.append(line)
-
-    text = "\n".join(lines)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return text
 
 
@@ -124,47 +50,38 @@ def _as_list(value: Any) -> list[Any]:
 def _text_from_item(item: Any) -> str:
     if isinstance(item, str):
         return item
-
     if not isinstance(item, dict):
         return ""
-
     for key in ("text", "content", "page_content", "preview"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
             return value
-
     return ""
 
 
 def _meta_from_item(item: Any) -> dict:
     if not isinstance(item, dict):
         return {}
-
     meta = item.get("metadata") or {}
     return meta if isinstance(meta, dict) else {}
 
 
 def _source_title(item: Any, fallback: str) -> str:
     meta = _meta_from_item(item)
-
     if isinstance(item, dict):
         for key in ("title", "name", "filename", "source"):
             value = item.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
-
     for key in ("title", "source", "doc_id", "path"):
         value = meta.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-
     return fallback
 
 
 def _clean_context_text(text: str) -> str:
-    text = re.sub(r"\s+", " ", text or "").strip()
-    text = re.sub(r"\((legal|news|realtime|attachment)[^)]*score\s*=\s*[\d.]+[^)]*\)", "", text, flags=re.I)
-    text = re.sub(r"\b(score|source_type)\s*=\s*[\w.:-]+", "", text, flags=re.I)
+    text = _clean_raw_chunk_text(text)
     text = re.sub(r"Do not use for[^.]+\.?", "", text, flags=re.I)
     text = re.sub(r"Không dùng thay cho căn cứ pháp luật chính thức\s*-?", "", text, flags=re.I)
     return text.strip()
@@ -200,7 +117,6 @@ def _asks_unlawful_use(question: str) -> bool:
 
 def _has_direct_sanction_evidence(question: str, items: list[Any]) -> bool:
     unlawful_use_query = _asks_unlawful_use(question)
-
     unlawful_use_subject = (
         "sử dụng trái phép", "su dung trai phep",
         "sử dụng ma túy trái phép", "su dung ma tuy trai phep",
@@ -229,15 +145,10 @@ def _has_direct_sanction_evidence(question: str, items: list[Any]) -> bool:
             _text_from_item(item),
             " ".join(str(v) for v in meta.values()),
         ]).lower()
-
         if unlawful_use_query:
-            # A document about "người nghiện" / compulsory rehabilitation is not
-            # a direct basis for the exact sanction of unlawful drug use unless it
-            # explicitly covers unlawful use and a concrete legal consequence.
             if any(term in blob for term in unlawful_use_subject) and any(term in blob for term in direct_legal_consequence):
                 return True
             continue
-
         if any(term in blob for term in general_subject) and any(term in blob for term in direct_legal_consequence + rehab_consequence):
             return True
     return False
@@ -246,64 +157,66 @@ def _has_direct_sanction_evidence(question: str, items: list[Any]) -> bool:
 def _insufficient_sanction_answer(language: str) -> str:
     if language == "en":
         return "\n".join([
-            "## Insufficient evidence",
-            "The current MaiThuyLaw dataset does not contain a direct legal basis that is clear enough to answer the exact sanction for unlawful drug use.",
+            "## Not enough direct legal basis",
+            "I found related materials, but they do not directly answer the exact legal consequence for unlawful drug use.",
             "",
-            "## What I can still help with",
-            "- I can look up related rules on compulsory rehabilitation if you ask specifically about rehabilitation measures.",
-            "- I can answer about a specific official document if you provide its link or article number.",
+            "## What you can do next",
+            "- Ask specifically about compulsory rehabilitation if that is the situation you want to understand.",
+            "- Provide an article number, document name, or official link so I can compare it directly.",
             "",
             "## Note",
-            "For a concrete case, check the original legal document or ask a competent authority or lawyer.",
+            "For legal consequences, I should not infer a sanction from related news or indirect documents.",
         ])
-
     return "\n".join([
-        "## Chưa đủ căn cứ",
-        "Tài liệu hiện có chưa có căn cứ pháp lý trực tiếp và đủ rõ để trả lời chính xác mức xử lý đối với hành vi sử dụng trái phép chất ma túy.",
+        "## Chưa đủ căn cứ trực tiếp",
+        "Mình tìm thấy một số nguồn liên quan, nhưng các nguồn hiện có chưa đủ trực tiếp để kết luận chính xác hành vi này sẽ bị xử lý như thế nào.",
         "",
-        "## Có thể tra cứu tiếp",
-        "- Nếu bạn hỏi riêng về biện pháp cai nghiện bắt buộc, mình có thể đối chiếu các nguồn hiện có về thủ tục và thẩm quyền.",
-        "- Nếu bạn có số điều, tên văn bản hoặc link văn bản chính thống, bạn có thể gửi vào để mình đối chiếu cụ thể hơn.",
+        "## Bạn có thể làm tiếp",
+        "- Nếu bạn đang hỏi về cai nghiện bắt buộc, mình có thể giải thích riêng quy trình và thẩm quyền áp dụng.",
+        "- Nếu bạn có số điều, tên văn bản hoặc link nguồn chính thống, hãy gửi vào để mình đối chiếu cụ thể hơn.",
         "",
         "## Lưu ý",
-        "Không nên suy diễn mức phạt từ các nguồn tin vụ án hoặc văn bản không điều chỉnh trực tiếp hành vi đang hỏi.",
+        "Với câu hỏi về mức phạt hoặc hậu quả pháp lý, mình sẽ không suy diễn từ nguồn chỉ liên quan gián tiếp.",
     ])
 
 
 def _build_context(items: list[Any], prefix: str) -> str:
-    blocks = []
-
+    blocks: list[str] = []
     for index, item in enumerate(items[:8], 1):
         title = _source_title(item, f"Nguồn {index}")
         body = _clean_context_text(_text_from_item(item))
-
         if not body:
             continue
-
         blocks.append(f"[{prefix}{index}] {title}\n{body[:1800]}")
-
     return "\n\n".join(blocks)
 
 
 def _build_attachment_context(items: list[Any]) -> str:
-    blocks = []
-
+    blocks: list[str] = []
     for index, item in enumerate(items[:4], 1):
         if not isinstance(item, dict):
             continue
-
         name = item.get("name") or item.get("filename") or f"Đính kèm {index}"
         verdict = item.get("verdict") or "needs_review"
-        preview = _clean_context_text(
-            item.get("preview") or item.get("text") or item.get("content") or ""
-        )
-
+        preview = _clean_context_text(item.get("preview") or item.get("text") or item.get("content") or "")
         if not preview:
             continue
-
         blocks.append(f"[A{index}] {name} | verdict={verdict}\n{preview[:1800]}")
-
     return "\n\n".join(blocks)
+
+
+def _sentence_candidates(text: str) -> list[str]:
+    cleaned = _clean_context_text(text)
+    pieces = re.split(r"(?<=[.!?])\s+|\n+", cleaned)
+    out: list[str] = []
+    for piece in pieces:
+        sentence = piece.strip(" -•\t\r\n")
+        if len(sentence) < 45:
+            continue
+        if re.search(r"\b[a-z]+-[a-z]+-[a-z]+", sentence.lower()):
+            continue
+        out.append(sentence[:260].rstrip(" ,.;") + ".")
+    return out
 
 
 def _fallback_answer(question: str, retrieved: list[Any], attachments: list[Any], language: str) -> str:
@@ -311,62 +224,52 @@ def _fallback_answer(question: str, retrieved: list[Any], attachments: list[Any]
         return _insufficient_sanction_answer(language)
 
     context = _build_attachment_context(attachments) or _build_context(retrieved, "S")
-    snippets = []
-
-    for block in context.split("\n\n")[:4]:
+    snippets: list[str] = []
+    for block in context.split("\n\n")[:5]:
         body = " ".join(block.splitlines()[1:])
-        body = _clean_context_text(body)
-        if body:
-            snippets.append(body[:260].rstrip(" ,.;") + ".")
+        for sentence in _sentence_candidates(body):
+            if sentence not in snippets:
+                snippets.append(sentence)
+            if len(snippets) >= 4:
+                break
+        if len(snippets) >= 4:
+            break
 
     if language == "en":
+        if not snippets:
+            return "I found related official sources, but they are not clear enough to summarize confidently. Please provide a more specific document, article number, or official link."
         lines = [
             "## Brief answer",
-            "I found relevant information in the available materials, but the AI drafting service is temporarily unavailable.",
+            "I found related official materials. The AI drafting layer is not available right now, so here is a cautious source-based summary.",
             "",
             "## Key points",
         ]
-        if snippets:
-            lines.extend(f"- {snippet}" for snippet in snippets)
-        else:
-            lines.append("- I could not find a sufficiently clear excerpt to summarize with confidence.")
-
-        lines.extend(["", "## References"])
     else:
+        if not snippets:
+            return "Mình tìm thấy nguồn liên quan, nhưng nội dung trích được chưa đủ rõ để trả lời chắc chắn. Bạn có thể hỏi cụ thể hơn hoặc gửi link/số điều cần đối chiếu."
         lines = [
             "## Tóm tắt ngắn",
-            "Mình tìm thấy một số thông tin liên quan trong tài liệu hiện có.",
+            "Mình tìm thấy một số nguồn chính thống liên quan. Dưới đây là phần tóm tắt thận trọng dựa trên nguồn hiện có.",
             "",
-            "## Các điểm đáng chú ý",
+            "## Điểm chính",
         ]
-        if snippets:
-            lines.extend(f"- {snippet}" for snippet in snippets)
-        else:
-            lines.append("- Chưa tìm thấy đoạn trích đủ rõ để tóm tắt chắc chắn.")
 
-        lines.extend(["", "## Nguồn tham khảo"])
-
-    for index, item in enumerate(retrieved[:5], 1):
-        lines.append(f"- [S{index}] {_source_title(item, f'Nguồn {index}')}")
-
-    for index, item in enumerate(attachments[:3], 1):
-        if isinstance(item, dict):
-            lines.append(f"- [A{index}] {item.get('name') or item.get('filename') or 'Đính kèm'}")
-
+    lines.extend(f"- {snippet}" for snippet in snippets)
     if language == "en":
-        lines.extend([
-            "",
-            "## Note",
-            "This information is for reference only. For a specific case, check the original legal documents or consult a competent authority.",
-        ])
+        lines.extend(["", "## Note", "This is a source-based summary. For a concrete case, check the original document or consult a competent authority."])
     else:
-        lines.extend([
-            "",
-            "## Lưu ý",
-            "Thông tin chỉ phục vụ tra cứu. Với vụ việc cụ thể, nên đối chiếu văn bản gốc hoặc hỏi cơ quan/chuyên gia có thẩm quyền.",
-        ])
-
+        lines.extend(["", "## Lưu ý", "Với trường hợp cụ thể, bạn vẫn nên đối chiếu văn bản gốc hoặc hỏi cơ quan/chuyên gia có thẩm quyền."])
     return "\n".join(lines)
+
+
+def _gemini_settings() -> tuple[str, str] | None:
+    if LLM_PROVIDER in {"none", "off", "false", "0"}:
+        return None
+    api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    if not api_key or genai is None:
+        return None
+    model = DEFAULT_GEMINI_MODEL or "gemini-1.5-flash"
+    return api_key, model
 
 
 def generate_answer(*args: Any, **kwargs: Any) -> str:
@@ -376,7 +279,6 @@ def generate_answer(*args: Any, **kwargs: Any) -> str:
         or kwargs.get("query")
         or (args[0] if args and isinstance(args[0], str) else "")
     )
-
     retrieved = (
         kwargs.get("retrieved")
         or kwargs.get("dataset_results")
@@ -385,56 +287,40 @@ def generate_answer(*args: Any, **kwargs: Any) -> str:
         or kwargs.get("matches")
         or []
     )
-
     attachments = kwargs.get("attachments") or kwargs.get("attachment_contexts") or []
     language = kwargs.get("language") or kwargs.get("lang") or "vi"
     language = "en" if str(language).lower().startswith("en") else "vi"
 
     retrieved_list = _as_list(retrieved)
     attachment_list = _as_list(attachments)
-
     context = _build_context(retrieved_list, "S")
     attachment_context = _build_attachment_context(attachment_list)
 
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    model = os.getenv("GEMINI_MODEL", "").strip()
-
-    if not api_key or not model or genai is None:
+    settings = _gemini_settings()
+    if not settings:
         return _fallback_answer(question, retrieved_list, attachment_list, language)
 
     if language == "en":
         instructions = """
-You are MaiThuyLaw AI, a professional legal information assistant focused on Vietnamese drug-related law, policy, and official news.
-
-Write in English.
-Do not expose technical metadata such as score, source_type, dataset, backend, provider, API key, fallback, or configuration.
-Do not copy raw broken OCR/chunk text verbatim. Synthesize the meaning into clear, readable points.
-If a Vietnamese legal title is important, keep the Vietnamese title and explain it in English.
-Use concise headings:
-- Brief answer
-- Key points
-- References
-- Note
-Use citations like [S1], [S2], [A1] when relying on sources.
-Do not include unsafe operational guidance related to illegal drugs.
-Do not mention "dataset answer" or "MaiThuyLaw dataset".
+You are MaiThuyLaw AI, a careful legal information assistant for Vietnam drug-related law, policy, and official news.
+Use only the provided sources and attachments. Do not invent legal rules, article numbers, sanctions, or citations.
+Write for a normal user, not an engineer. Avoid words like dataset, RAG, backend, metadata, score, provider, fallback, or configuration.
+If sources are directly relevant, explain the answer in clear practical language with 3-5 useful bullet points.
+If sources are related but not direct enough, say that the evidence is not direct enough and suggest what source or search would help.
+Use short headings: Brief answer, Key points, What this means, Note.
+Cite sources briefly as [S1], [S2], [A1] when you rely on them.
+Never provide operational guidance for illegal drug activity, evasion, concealment, or lawbreaking.
 """.strip()
     else:
         instructions = """
-Bạn là MaiThuyLaw AI, trợ lý thông tin pháp luật chuyên nghiệp về pháp luật, chính sách và nguồn tin chính thống liên quan đến ma túy tại Việt Nam.
-
-Viết bằng tiếng Việt tự nhiên, rõ ràng, lịch sự.
-Không để lộ metadata kỹ thuật như score, source_type, dataset, backend, provider, API key, fallback hoặc cấu hình.
-Không bê nguyên văn các đoạn OCR/chunk bị lỗi, bị cụt chữ hoặc có lẫn tiếng Anh kỹ thuật. Hãy đọc hiểu và diễn giải lại thành ý chính sạch, đúng nghĩa.
-Không viết các heading thô như "Thông tin từ dataset hiện có", "Trả lời từ dataset", "Đối chiếu với nguồn MaiThuyLaw".
-Nếu nguồn không có căn cứ trực tiếp cho câu hỏi về mức xử lý, mức phạt hoặc trách nhiệm pháp lý, hãy nói "Chưa đủ căn cứ" thay vì suy diễn từ tin tức hoặc nguồn gián tiếp.
-Ưu tiên format:
-- Tóm tắt ngắn
-- Các điểm đáng chú ý
-- Nguồn tham khảo
-- Lưu ý
+Bạn là MaiThuyLaw AI, trợ lý thông tin pháp luật cẩn trọng về pháp luật, chính sách và nguồn tin chính thống liên quan đến ma túy tại Việt Nam.
+Chỉ dựa trên nguồn được cung cấp trong phần nguồn tham khảo và nội dung đính kèm. Không tự bịa điều luật, mức phạt, số điều, tên văn bản hoặc trích dẫn.
+Viết cho người dùng phổ thông đang cần hiểu vấn đề, không viết kiểu kỹ thuật. Không dùng các từ như dataset, RAG, backend, metadata, score, provider, fallback hoặc cấu hình.
+Nếu nguồn đủ liên quan, hãy trả lời thật hữu ích: nêu quy trình/ý chính/điều kiện/thẩm quyền theo cách dễ hiểu, có 3-5 gạch đầu dòng cụ thể.
+Nếu nguồn chỉ liên quan gián tiếp và chưa đủ căn cứ trực tiếp, hãy nói nhẹ nhàng rằng hiện chưa đủ căn cứ để kết luận chắc chắn và gợi ý người dùng tìm nguồn chính thống mới hơn hoặc gửi số điều/link văn bản.
+Ưu tiên heading mềm mại: Tóm tắt ngắn, Điểm chính, Người dùng cần lưu ý, Nguồn liên quan.
 Dùng citation ngắn như [S1], [S2], [A1] khi dựa vào nguồn.
-Không đưa hướng dẫn nguy hiểm, lách luật, che giấu hoặc thực hiện hành vi liên quan đến ma túy.
+Không đưa hướng dẫn nguy hiểm, lách luật, che giấu, né xử lý hoặc thực hiện hành vi liên quan đến ma túy.
 """.strip()
 
     prompt = f"""
@@ -443,18 +329,26 @@ Không đưa hướng dẫn nguy hiểm, lách luật, che giấu hoặc thực 
 Câu hỏi của người dùng:
 {question}
 
-Nguồn từ tài liệu tham khảo:
-{context or "(Không có nguồn phù hợp.)"}
+Nguồn tham khảo đã qua kiểm soát:
+{context or "(Chưa có nguồn phù hợp.)"}
 
 Nội dung file/link đính kèm nếu có:
 {attachment_context or "(Không có đính kèm.)"}
 
-Hãy trả lời như một sản phẩm pháp luật AI dành cho người dùng cuối: mạch lạc, có đầu mục, dễ đọc, không thô kỹ thuật.
+Hãy trả lời như một sản phẩm pháp luật AI dành cho người dùng cuối: rõ ràng, mềm mại, đúng phạm vi, không thô kỹ thuật.
 """.strip()
 
+    api_key, model = settings
     try:
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model=model, contents=prompt)
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={"temperature": 0.2, "max_output_tokens": 900},
+            )
+        except TypeError:
+            response = client.models.generate_content(model=model, contents=prompt)
         answer = _clean_answer(getattr(response, "text", "") or "")
         if answer:
             if _is_sanction_question(question) and not attachment_list and not _has_direct_sanction_evidence(question, retrieved_list):
