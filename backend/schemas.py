@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -38,6 +41,9 @@ class ChatResponse(BaseModel):
     follow_up_suggestions: list[str] = Field(default_factory=list)
 
     def model_post_init(self, __context) -> None:
+        self.answer = _repair_text(self.answer) or ""
+        self.reason = _repair_text(self.reason)
+        self.evidence_level = _repair_text(self.evidence_level)
         self.sources = _normalize_product_sources(self.sources)
 
         if not self.evidence_level:
@@ -53,6 +59,8 @@ class ChatResponse(BaseModel):
 
         if not self.safety:
             self.safety = _infer_safety(self.refused, self.reason, self.evidence_level)
+        else:
+            self.safety = _repair_text_values(self.safety)
 
         if not self.follow_up_suggestions:
             self.follow_up_suggestions = _suggest_followups(
@@ -61,6 +69,57 @@ class ChatResponse(BaseModel):
                 self.refused,
                 self.reason,
             )
+        else:
+            self.follow_up_suggestions = [
+                _repair_text(item) or "" for item in self.follow_up_suggestions
+            ]
+
+
+def _looks_mojibake(value: str) -> bool:
+    if not value:
+        return False
+    markers = ("Ã", "Â", "Ä", "Æ", "Ð", "áº", "á»", "â€", "ï¿½")
+    if any(marker in value for marker in markers):
+        return True
+    return bool(re.search(r"[\u0080-\u009f]", value))
+
+
+def _mojibake_score(value: str) -> int:
+    if not value:
+        return 0
+    score = 0
+    for marker in ("Ã", "Â", "Ä", "Æ", "Ð", "áº", "á»", "â€", "ï¿½", "�"):
+        score += value.count(marker) * 4
+    score += len(re.findall(r"[\u0080-\u009f]", value)) * 3
+    return score
+
+
+def _repair_text(value: Any) -> Any:
+    if not isinstance(value, str) or not _looks_mojibake(value):
+        return value
+
+    candidates = [value]
+    for encoding in ("cp1252", "latin1"):
+        try:
+            candidates.append(value.encode(encoding).decode("utf-8"))
+        except Exception:
+            try:
+                candidates.append(value.encode(encoding, errors="ignore").decode("utf-8", errors="ignore"))
+            except Exception:
+                pass
+
+    best = min(candidates, key=lambda s: (_mojibake_score(s), -len(s)))
+    return best if _mojibake_score(best) < _mojibake_score(value) else value
+
+
+def _repair_text_values(value: Any) -> Any:
+    if isinstance(value, str):
+        return _repair_text(value)
+    if isinstance(value, list):
+        return [_repair_text_values(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _repair_text_values(item) for key, item in value.items()}
+    return value
 
 
 def _normalize_product_sources(sources: list[dict]) -> list[dict]:
@@ -71,8 +130,8 @@ def _normalize_product_sources(sources: list[dict]) -> list[dict]:
 
         source_type = str(raw.get("source_type") or raw.get("type") or "").strip()
         url = raw.get("canonical_url") or raw.get("url") or raw.get("source_url") or raw.get("link")
-        title = raw.get("title") or raw.get("source_title") or raw.get("doc_id") or f"Nguồn {idx}"
-        snippet = raw.get("snippet") or raw.get("preview") or raw.get("excerpt") or raw.get("content")
+        title = _repair_text(raw.get("title") or raw.get("source_title") or raw.get("doc_id") or f"Nguồn {idx}")
+        snippet = _repair_text(raw.get("snippet") or raw.get("preview") or raw.get("excerpt") or raw.get("content"))
         if isinstance(snippet, str):
             snippet = " ".join(snippet.split())[:280]
         else:
@@ -83,7 +142,7 @@ def _normalize_product_sources(sources: list[dict]) -> list[dict]:
             "title": title,
             "source_type": source_type or None,
             "source_type_label": _source_type_label(source_type),
-            "publisher": raw.get("publisher"),
+            "publisher": _repair_text(raw.get("publisher")),
             "official_domain": raw.get("official_domain"),
             "url": url,
             "canonical_url": url,
