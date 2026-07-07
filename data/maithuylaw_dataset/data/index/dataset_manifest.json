@@ -1,47 +1,41 @@
 {
   "name": "maithuylaw_dataset",
   "scope": "vietnam_2025_plus_strict",
-  "description": "Neutral strict dataset for MaiThuyLaw AI. Includes Vietnam-related legal/policy/news content from 2025 onward only.",
-  "chunks": 230,
-  "documents": 28,
+  "description": "Strict 2025-2026 dataset for MaiThuyLaw AI. Includes Vietnam drug-related legal documents, policy, and verified news from 2025 onward only. Scope is intentionally limited to 2025-2026; earlier legislation (e.g. BLHS 2015) is excluded. Chatbot returns evidence_level=insufficient when sources are unavailable.",
+  "chunks": 224,
+  "documents": 27,
   "source_type_counts": {
-    "legal": 188,
+    "legal": 182,
     "news": 42
   },
   "docs": [
     {
-      "doc_id": "legal-bo-luat-hinh-su-2015",
-      "title": "Bộ luật Hình sự 2015",
-      "source_type": "legal",
-      "chunks": 6
-    },
-    {
       "doc_id": "legal-nghi-dinh-28-2026-nd-cp-danh-muc-chat-ma-tuy-va-tien-chat",
-      "title": "Nghị định 28/2026/NĐ-CP - Danh mục chất ma túy và tiền chất",
+      "title": "Nghị định số 28/2026/NĐ-CP quy định các danh mục chất ma túy và tiền chất",
       "source_type": "legal",
       "chunks": 87
     },
     {
       "doc_id": "legal-phap-lenh-08-2025-ubtvqh15-phan-sua-doi-thu-tuc-dua-nguoi-nghien-ma-tuy-12-18-tuoi-vao-co-",
-      "title": "Pháp lệnh 08/2025/UBTVQH15 Phần sửa đổi thủ tục đưa người nghiện ma túy 12 18 tuổi vào cơ sở cai nghiện bắt buộc",
+      "title": "Pháp lệnh số 08/2025/UBTVQH15 sửa đổi, bổ sung một số pháp lệnh liên quan đến thủ tục tư pháp và xử lý hành chính",
       "source_type": "legal",
       "chunks": 25
     },
     {
       "doc_id": "legal-quyet-dinh-28-2025-qd-ttg-dia-ban-trong-diem-ve-ma-tuy",
-      "title": "Quyết định 28/2025/QĐ-TTg - Địa bàn trọng điểm về ma túy",
+      "title": "Quyết định số 28/2025/QĐ-TTg ban hành tiêu chí xác định tuyến, địa bàn trọng điểm phức tạp về ma túy, địa bàn không ma túy",
       "source_type": "legal",
       "chunks": 12
     },
     {
       "doc_id": "legal-thong-tu-34-2025-tt-bca-hoat-dong-hop-phap-lien-quan-den-ma-tuy-vi-muc-dich-quoc-phong-an-",
-      "title": "Thông tư 34/2025/TT BCA Hoạt động hợp pháp liên quan đến ma túy vì mục đích quốc phòng, an ninh",
+      "title": "Thông tư số 34/2025/TT-BCA quy định một số hoạt động hợp pháp liên quan đến ma túy vì mục đích quốc phòng, an ninh",
       "source_type": "legal",
       "chunks": 26
     },
     {
       "doc_id": "legal-thong-tu-lien-tich-03-2025-co-so-cai-nghien-bat-buoc",
-      "title": "Thông tư liên tịch 03/2025 - Cơ sở cai nghiện bắt buộc",
+      "title": "Thông tư liên tịch số 03/2025/TTLT-BCA-VKSNDTC-TANDTC về xử lý vấn đề liên quan đến biện pháp xử lý hành chính khi sắp xếp tổ chức bộ máy nhà nước",
       "source_type": "legal",
       "chunks": 32
     },
@@ -177,22 +171,5 @@
       "source_type": "news",
       "chunks": 2
     }
-  ],
-  "updated_at": "2026-06-15T10:49:41",
-  "source_schema_version": "canonical-url-v1",
-  "total_chunks": 224,
-  "total_documents": 27,
-  "legal_url_normalization": {
-    "patched_legal_chunks": 182,
-    "dropped_chunks": 6,
-    "dropped_doc_ids": [
-      "legal-bo-luat-hinh-su-2015"
-    ],
-    "canonical_domain": "vbpl.vn"
-  },
-  "chunks_by_source_type": {
-    "legal": 182,
-    "news": 42,
-    "other": 0
-  }
+  ]
 }
