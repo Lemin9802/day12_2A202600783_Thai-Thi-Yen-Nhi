@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover
 
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
 
 
 def _clean_raw_chunk_text(value: str) -> str:
@@ -38,7 +38,10 @@ def _clean_raw_chunk_text(value: str) -> str:
         if idx > 0:
             first = idx if first is None else min(first, idx)
     if first is not None:
-        text = text[first:].strip()
+        prefix = text[:first].strip().lower()
+        looks_like_noise = bool(re.search(r"\b(source|score|metadata|chunk|id|path|url)\b\s*[:=]", prefix))
+        if looks_like_noise and len(prefix) <= 120:
+            text = text[first:].strip()
 
     return text
 
@@ -115,6 +118,16 @@ def _asks_unlawful_use(question: str) -> bool:
     ))
 
 
+def _has_negated_direct_consequence(blob: str) -> bool:
+    return any(term in blob for term in (
+        "không nêu trực tiếp", "khong neu truc tiep",
+        "không nêu rõ", "khong neu ro",
+        "chưa nêu trực tiếp", "chua neu truc tiep",
+        "chưa đủ căn cứ trực tiếp", "chua du can cu truc tiep",
+        "không có căn cứ trực tiếp", "khong co can cu truc tiep",
+    ))
+
+
 def _has_direct_sanction_evidence(question: str, items: list[Any]) -> bool:
     unlawful_use_query = _asks_unlawful_use(question)
     unlawful_use_subject = (
@@ -146,6 +159,8 @@ def _has_direct_sanction_evidence(question: str, items: list[Any]) -> bool:
             " ".join(str(v) for v in meta.values()),
         ]).lower()
         if unlawful_use_query:
+            if _has_negated_direct_consequence(blob):
+                continue
             if any(term in blob for term in unlawful_use_subject) and any(term in blob for term in direct_legal_consequence):
                 return True
             continue
@@ -207,15 +222,16 @@ def _build_attachment_context(items: list[Any]) -> str:
 
 def _sentence_candidates(text: str) -> list[str]:
     cleaned = _clean_context_text(text)
-    pieces = re.split(r"(?<=[.!?])\s+|\n+", cleaned)
+    pieces = re.split(r"(?<=[.!?…])\s+|\n+", cleaned)
     out: list[str] = []
     for piece in pieces:
-        sentence = piece.strip(" -•\t\r\n")
+        sentence = re.sub(r"\s+", " ", piece).strip(" -•\t\r\n")
         if len(sentence) < 45:
             continue
         if re.search(r"\b[a-z]+-[a-z]+-[a-z]+", sentence.lower()):
             continue
-        out.append(sentence[:260].rstrip(" ,.;") + ".")
+        if sentence not in out:
+            out.append(sentence)
     return out
 
 
@@ -237,26 +253,26 @@ def _fallback_answer(question: str, retrieved: list[Any], attachments: list[Any]
 
     if language == "en":
         if not snippets:
-            return "I found related official sources, but they are not clear enough to summarize confidently. Please provide a more specific document, article number, or official link."
+            return "I do not yet see enough direct basis in the available sources to answer confidently. Please provide a more specific document, article number, or official link."
         lines = [
             "## Brief answer",
-            "I found related official materials. The AI drafting layer is not available right now, so here is a cautious source-based summary.",
+            "I found related sources. Here is a cautious summary based on the available material.",
             "",
             "## Key points",
         ]
     else:
         if not snippets:
-            return "Mình tìm thấy nguồn liên quan, nhưng nội dung trích được chưa đủ rõ để trả lời chắc chắn. Bạn có thể hỏi cụ thể hơn hoặc gửi link/số điều cần đối chiếu."
+            return "Mình chưa thấy căn cứ đủ trực tiếp trong nguồn hiện có để trả lời chắc chắn. Bạn có thể hỏi cụ thể hơn hoặc gửi link/số điều từ nguồn chính thống để mình đối chiếu."
         lines = [
             "## Tóm tắt ngắn",
-            "Mình tìm thấy một số nguồn chính thống liên quan. Dưới đây là phần tóm tắt thận trọng dựa trên nguồn hiện có.",
+            "Mình tìm thấy một số nguồn liên quan. Dưới đây là phần tóm tắt thận trọng dựa trên nội dung hiện có.",
             "",
             "## Điểm chính",
         ]
 
     lines.extend(f"- {snippet}" for snippet in snippets)
     if language == "en":
-        lines.extend(["", "## Note", "This is a source-based summary. For a concrete case, check the original document or consult a competent authority."])
+        lines.extend(["", "## Note", "For a concrete case, check the original document or consult a competent authority."])
     else:
         lines.extend(["", "## Lưu ý", "Với trường hợp cụ thể, bạn vẫn nên đối chiếu văn bản gốc hoặc hỏi cơ quan/chuyên gia có thẩm quyền."])
     return "\n".join(lines)
@@ -268,7 +284,7 @@ def _gemini_settings() -> tuple[str, str] | None:
     api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
     if not api_key or genai is None:
         return None
-    model = DEFAULT_GEMINI_MODEL or "gemini-1.5-flash"
+    model = DEFAULT_GEMINI_MODEL or "gemini-3.1-flash-lite"
     return api_key, model
 
 
