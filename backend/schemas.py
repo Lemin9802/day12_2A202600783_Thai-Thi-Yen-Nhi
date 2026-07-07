@@ -167,6 +167,36 @@ def _clean_answer_text(value: str) -> str:
     return text
 
 
+def _is_low_quality_snippet(value: str | None) -> bool:
+    if not value:
+        return True
+    text = str(value).strip()
+    if len(text) < 25:
+        return True
+    if "---" in text:
+        return True
+    if re.search(r"\b[a-z]+-[a-z]+-[a-z]+", text.lower()):
+        return True
+
+    letters = re.findall(r"[A-Za-zÀ-ỹ]", text)
+    if len(letters) >= 80:
+        accented = re.findall(r"[À-ỹ]", text)
+        lower = text.lower()
+        unaccented_legal_hits = sum(
+            1
+            for token in (
+                "quyet", "dinh", "chinh", "phu", "cong", "hoa", "nghia",
+                "doc", "lap", "tu", "hanh", "phuc", "luat", "ma", "tuy",
+                "khong", "trong", "diem", "phuc", "tap",
+            )
+            if token in lower
+        )
+        if len(accented) / max(len(letters), 1) < 0.02 and unaccented_legal_hits >= 4:
+            return True
+
+    return False
+
+
 @lru_cache(maxsize=1)
 def _dataset_snippet_registry() -> dict[str, dict]:
     dataset_path = Path(__file__).resolve().parents[1] / "data" / "maithuylaw_dataset" / "data" / "index" / "rag_chunks.json"
@@ -211,7 +241,7 @@ def _compact_snippet(value: Any, limit: int = 280) -> str | None:
         return None
     text = _clean_answer_text(_repair_text(value) or "")
     text = " ".join(text.split())
-    if not text:
+    if not text or _is_low_quality_snippet(text):
         return None
     return text[:limit]
 
@@ -229,6 +259,8 @@ def _normalize_product_sources(sources: list[dict]) -> list[dict]:
         url = raw.get("canonical_url") or raw.get("url") or raw.get("source_url") or raw.get("link") or reg.get("url")
         title = _repair_text(raw.get("title") or raw.get("source_title") or raw.get("doc_id") or f"Nguồn {idx}")
         snippet = _compact_snippet(raw.get("snippet") or raw.get("preview") or raw.get("excerpt") or raw.get("content") or reg.get("snippet"))
+        if _is_low_quality_snippet(snippet) and isinstance(title, str):
+            snippet = title
 
         item = {
             "source_id": raw.get("source_id") or f"S{idx}",
