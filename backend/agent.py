@@ -18,7 +18,6 @@ except Exception:  # pragma: no cover
 
 
 
-
 def _clean_raw_chunk_text(value: str) -> str:
     value = re.sub(r"\s+", " ", str(value or "")).strip()
     value = re.sub(r"^[,.;:\-\s]+", "", value)
@@ -181,6 +180,67 @@ def _clean_answer(text: str) -> str:
     return text.strip()
 
 
+def _is_sanction_question(question: str) -> bool:
+    q = str(question or "").lower()
+    return any(term in q for term in (
+        "sử dụng trái phép", "su dung trai phep", "bị xử lý", "bi xu ly",
+        "xử lý thế nào", "xu ly the nao", "xử phạt", "xu phat",
+        "bị phạt", "bi phat", "mức phạt", "muc phat", "hình phạt",
+        "trách nhiệm hình sự", "trach nhiem hinh su",
+    ))
+
+
+def _has_direct_sanction_evidence(items: list[Any]) -> bool:
+    direct_subject = (
+        "sử dụng trái phép", "su dung trai phep", "người sử dụng", "nguoi su dung",
+        "người nghiện", "nguoi nghien", "nghiện ma túy", "nghien ma tuy",
+    )
+    consequence = (
+        "xử phạt", "xu phat", "bị phạt", "bi phat", "phạt tiền", "phat tien",
+        "trách nhiệm hình sự", "trach nhiem hinh su", "biện pháp xử lý hành chính",
+        "bien phap xu ly hanh chinh", "cai nghiện bắt buộc", "cai nghien bat buoc",
+        "đưa vào cơ sở cai nghiện", "dua vao co so cai nghien",
+    )
+
+    for item in items or []:
+        meta = _meta_from_item(item)
+        blob = " ".join([
+            _source_title(item, ""),
+            _text_from_item(item),
+            " ".join(str(v) for v in meta.values()),
+        ]).lower()
+        if any(term in blob for term in direct_subject) and any(term in blob for term in consequence):
+            return True
+    return False
+
+
+def _insufficient_sanction_answer(language: str) -> str:
+    if language == "en":
+        return "\n".join([
+            "## Insufficient evidence",
+            "The current MaiThuyLaw dataset does not contain a direct legal basis that is clear enough to answer the exact sanction for unlawful drug use.",
+            "",
+            "## What I can still help with",
+            "- I can look up related rules on compulsory rehabilitation if you ask specifically about rehabilitation measures.",
+            "- I can answer about a specific official document if you provide its link or article number.",
+            "",
+            "## Note",
+            "For a concrete case, check the original legal document or ask a competent authority or lawyer.",
+        ])
+
+    return "\n".join([
+        "## Chưa đủ căn cứ",
+        "Tài liệu hiện có chưa có căn cứ pháp lý trực tiếp và đủ rõ để trả lời chính xác mức xử lý đối với hành vi sử dụng trái phép chất ma túy.",
+        "",
+        "## Có thể tra cứu tiếp",
+        "- Nếu bạn hỏi riêng về biện pháp cai nghiện bắt buộc, mình có thể đối chiếu các nguồn hiện có về thủ tục và thẩm quyền.",
+        "- Nếu bạn có số điều, tên văn bản hoặc link văn bản chính thống, bạn có thể gửi vào để mình đối chiếu cụ thể hơn.",
+        "",
+        "## Lưu ý",
+        "Không nên suy diễn mức phạt từ các nguồn tin vụ án hoặc văn bản không điều chỉnh trực tiếp hành vi đang hỏi.",
+    ])
+
+
 def _build_context(items: list[Any], prefix: str) -> str:
     blocks = []
 
@@ -218,6 +278,9 @@ def _build_attachment_context(items: list[Any]) -> str:
 
 
 def _fallback_answer(question: str, retrieved: list[Any], attachments: list[Any], language: str) -> str:
+    if _is_sanction_question(question) and not attachments and not _has_direct_sanction_evidence(retrieved):
+        return _insufficient_sanction_answer(language)
+
     context = _build_attachment_context(attachments) or _build_context(retrieved, "S")
     snippets = []
 
@@ -335,6 +398,7 @@ Viết bằng tiếng Việt tự nhiên, rõ ràng, lịch sự.
 Không để lộ metadata kỹ thuật như score, source_type, dataset, backend, provider, API key, fallback hoặc cấu hình.
 Không bê nguyên văn các đoạn OCR/chunk bị lỗi, bị cụt chữ hoặc có lẫn tiếng Anh kỹ thuật. Hãy đọc hiểu và diễn giải lại thành ý chính sạch, đúng nghĩa.
 Không viết các heading thô như "Thông tin từ dataset hiện có", "Trả lời từ dataset", "Đối chiếu với nguồn MaiThuyLaw".
+Nếu nguồn không có căn cứ trực tiếp cho câu hỏi về mức xử lý, mức phạt hoặc trách nhiệm pháp lý, hãy nói "Chưa đủ căn cứ" thay vì suy diễn từ tin tức hoặc nguồn gián tiếp.
 Ưu tiên format:
 - Tóm tắt ngắn
 - Các điểm đáng chú ý
@@ -364,6 +428,8 @@ Hãy trả lời như một sản phẩm pháp luật AI dành cho người dùn
         response = client.models.generate_content(model=model, contents=prompt)
         answer = _clean_answer(getattr(response, "text", "") or "")
         if answer:
+            if _is_sanction_question(question) and not attachment_list and not _has_direct_sanction_evidence(retrieved_list):
+                return _insufficient_sanction_answer(language)
             return answer
     except Exception:
         pass
