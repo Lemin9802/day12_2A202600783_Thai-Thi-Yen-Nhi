@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -41,7 +44,7 @@ class ChatResponse(BaseModel):
     follow_up_suggestions: list[str] = Field(default_factory=list)
 
     def model_post_init(self, __context) -> None:
-        self.answer = _repair_text(self.answer) or ""
+        self.answer = _clean_answer_text(_repair_text(self.answer) or "")
         self.reason = _repair_text(self.reason)
         self.evidence_level = _repair_text(self.evidence_level)
         self.sources = _normalize_product_sources(self.sources)
@@ -70,18 +73,14 @@ class ChatResponse(BaseModel):
                 self.reason,
             )
         else:
-            self.follow_up_suggestions = [
-                _repair_text(item) or "" for item in self.follow_up_suggestions
-            ]
+            self.follow_up_suggestions = [_repair_text(item) or "" for item in self.follow_up_suggestions]
 
 
 def _looks_mojibake(value: str) -> bool:
     if not value:
         return False
     markers = ("Ã", "Â", "Ä", "Æ", "Ð", "áº", "á»", "â€", "ï¿½")
-    if any(marker in value for marker in markers):
-        return True
-    return bool(re.search(r"[\u0080-\u009f]", value))
+    return any(marker in value for marker in markers) or bool(re.search(r"[\u0080-\u009f]", value))
 
 
 def _mojibake_score(value: str) -> int:
@@ -122,31 +121,125 @@ def _repair_text_values(value: Any) -> Any:
     return value
 
 
+def _first_visible_char(value: str) -> str:
+    text = value.strip().lstrip("-•*0123456789. )(").strip()
+    return text[:1]
+
+
+def _clean_answer_text(value: str) -> str:
+    if not value:
+        return ""
+
+    text = value.replace("\r\n", "\n")
+    text = re.sub(r"\s+\*\*Source:\*\*.*", "", text)
+    text = re.sub(r"\s+\*\*Date:\*\*.*", "", text)
+    text = re.sub(r"\s+\*\*URL:\*\*\s*https?://\S+", "", text)
+    text = re.sub(r"\s+\*\*Group:\*\*.*", "", text)
+    text = re.sub(r"https?://\S+", "", text)
+
+    # Source cards already carry references, so keep the legal note but remove
+    # duplicated raw reference lists from the prose answer.
+    text = re.sub(r"\n##\s*Nguồn tham khảo\s*\n.*?(?=\n##\s*Lưu ý|\Z)", "\n", text, flags=re.S)
+    text = re.sub(r"\n##\s*References\s*\n.*?(?=\n##\s*Note|\Z)", "\n", text, flags=re.S | re.I)
+
+    kept: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            kept.append("")
+            continue
+
+        if stripped.startswith(("- ", "* ", "• ")):
+            body = stripped[2:].strip()
+            first = _first_visible_char(body)
+            if first and first.islower():
+                continue
+            if len(body) < 35:
+                continue
+            if body.endswith(("xác đ.", "xác định.", "Group:.")):
+                continue
+
+        kept.append(line)
+
+    text = "\n".join(kept)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+@lru_cache(maxsize=1)
+def _dataset_snippet_registry() -> dict[str, dict]:
+    dataset_path = Path(__file__).resolve().parents[1] / "data" / "maithuylaw_dataset" / "data" / "index" / "rag_chunks.json"
+    registry: dict[str, dict] = {}
+    try:
+        chunks = json.loads(dataset_path.read_text(encoding="utf-8"))
+    except Exception:
+        return registry
+
+    if not isinstance(chunks, list):
+        return registry
+
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        meta = chunk.get("metadata") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        content = _compact_snippet(chunk.get("content"))
+        keys = [
+            meta.get("doc_id"),
+            meta.get("source_id"),
+            meta.get("chunk_id"),
+            chunk.get("doc_id"),
+        ]
+        item = {
+            "snippet": content,
+            "publisher": meta.get("publisher") or chunk.get("publisher"),
+            "official_domain": meta.get("official_domain") or chunk.get("official_domain"),
+            "source_type": meta.get("source_type") or meta.get("type") or chunk.get("source_type"),
+            "url": meta.get("canonical_url") or meta.get("url") or meta.get("source_url") or chunk.get("url"),
+        }
+        for key in keys:
+            key = str(key or "").strip()
+            if key and key not in registry:
+                registry[key] = item
+    return registry
+
+
+def _compact_snippet(value: Any, limit: int = 280) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = _clean_answer_text(_repair_text(value) or "")
+    text = " ".join(text.split())
+    if not text:
+        return None
+    return text[:limit]
+
+
 def _normalize_product_sources(sources: list[dict]) -> list[dict]:
+    registry = _dataset_snippet_registry()
     normalized: list[dict] = []
     for idx, raw in enumerate(sources or [], start=1):
         if not isinstance(raw, dict):
             continue
 
-        source_type = str(raw.get("source_type") or raw.get("type") or "").strip()
-        url = raw.get("canonical_url") or raw.get("url") or raw.get("source_url") or raw.get("link")
+        doc_id = raw.get("doc_id") or raw.get("source_id")
+        reg = registry.get(str(doc_id or ""), {})
+        source_type = str(raw.get("source_type") or raw.get("type") or reg.get("source_type") or "").strip()
+        url = raw.get("canonical_url") or raw.get("url") or raw.get("source_url") or raw.get("link") or reg.get("url")
         title = _repair_text(raw.get("title") or raw.get("source_title") or raw.get("doc_id") or f"Nguồn {idx}")
-        snippet = _repair_text(raw.get("snippet") or raw.get("preview") or raw.get("excerpt") or raw.get("content"))
-        if isinstance(snippet, str):
-            snippet = " ".join(snippet.split())[:280]
-        else:
-            snippet = None
+        snippet = _compact_snippet(raw.get("snippet") or raw.get("preview") or raw.get("excerpt") or raw.get("content") or reg.get("snippet"))
 
         item = {
             "source_id": raw.get("source_id") or f"S{idx}",
             "title": title,
             "source_type": source_type or None,
             "source_type_label": _source_type_label(source_type),
-            "publisher": _repair_text(raw.get("publisher")),
-            "official_domain": raw.get("official_domain"),
+            "publisher": _repair_text(raw.get("publisher") or reg.get("publisher")),
+            "official_domain": raw.get("official_domain") or reg.get("official_domain"),
             "url": url,
             "canonical_url": url,
-            "doc_id": raw.get("doc_id"),
+            "doc_id": doc_id,
             "snippet": snippet,
         }
         normalized.append({k: v for k, v in item.items() if v not in (None, "")})
