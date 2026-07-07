@@ -13,18 +13,17 @@ class ChatRequest(BaseModel):
 
 
 class Source(BaseModel):
+    title: str
+    source_type: str = ""
     canonical_url: str | None = None
     url: str | None = None
-    source_url: str | None = None
-    link: str | None = None
     publisher: str | None = None
     official_domain: str | None = None
     doc_id: str | None = None
     source_id: str | None = None
-    title: str
-    source_type: str
-    url: str | None = None
     score: float | None = None
+
+
 class ChatResponse(BaseModel):
     answer: str
     chat_id: str
@@ -45,7 +44,7 @@ class RenameChatRequest(BaseModel):
 
 class ChatSummary(BaseModel):
     id: str
-    user_id: str
+    user_id: str = "demo-user"
     title: str
     created_at: str | None = None
     updated_at: str | None = None
@@ -54,7 +53,7 @@ class ChatSummary(BaseModel):
 
 class ChatDetail(BaseModel):
     id: str
-    user_id: str
+    user_id: str = "demo-user"
     title: str
     created_at: str | None = None
     updated_at: str | None = None
@@ -67,6 +66,7 @@ class LinkAttachmentRequest(BaseModel):
     chat_id: str | None = None
     title: str | None = None
 
+
 class GenerateTitleRequest(BaseModel):
     user_id: str
     message: str
@@ -76,4 +76,3 @@ class GenerateTitleRequest(BaseModel):
 class GenerateTitleResponse(BaseModel):
     chat_id: str
     title: str
-
