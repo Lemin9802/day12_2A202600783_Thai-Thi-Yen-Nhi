@@ -63,14 +63,31 @@ def dataset_summary() -> dict:
 
 LEGAL_INTENT_TERMS = [
     "quy định", "điều", "khoản", "luật", "nghị định", "thông tư", "pháp lệnh",
-    "bị phạt", "xử phạt", "trách nhiệm hình sự", "tội", "khung hình phạt",
+    "bị phạt", "xử phạt", "xử lý", "bị xử lý", "trách nhiệm hình sự", "tội",
+    "khung hình phạt", "vi phạm hành chính", "biện pháp xử lý hành chính",
     "tàng trữ", "vận chuyển", "mua bán", "sản xuất", "tổ chức sử dụng",
-    "cai nghiện bắt buộc", "hồ sơ", "thủ tục",
+    "sử dụng trái phép", "cai nghiện bắt buộc", "hồ sơ", "thủ tục",
 ]
 
 NEWS_INTENT_TERMS = [
     "tin", "tin tức", "mới nhất", "gần đây", "vụ", "chuyên án", "bắt", "khởi tố",
     "xét xử", "đường dây", "học đường", "thuốc lá điện tử", "xu hướng",
+]
+
+SANCTION_INTENT_TERMS = [
+    "xử lý", "bị xử lý", "xử phạt", "bị phạt", "mức phạt", "hình phạt",
+    "trách nhiệm hình sự", "vi phạm hành chính", "sử dụng trái phép",
+]
+
+LEGAL_SIGNAL_TERMS = [
+    "điều", "khoản", "nghị định", "thông tư", "pháp lệnh", "luật",
+    "xử phạt", "vi phạm hành chính", "biện pháp xử lý hành chính",
+    "trách nhiệm hình sự", "cai nghiện bắt buộc", "sử dụng trái phép",
+]
+
+NEWS_INCIDENT_TERMS = [
+    "khởi tố", "tạm giam", "bắt giữ", "xét xử", "bị cáo", "đối tượng",
+    "đường dây", "chuyên án", "thu giữ", "karaoke", "triệt phá",
 ]
 
 
@@ -86,14 +103,36 @@ def _query_intent(query: str) -> str:
     return "general"
 
 
-def _source_boost(intent: str, source_type: str) -> float:
+def _is_sanction_query(query: str) -> bool:
+    q = str(query).lower()
+    return any(term in q for term in SANCTION_INTENT_TERMS)
+
+
+def _expanded_query(query: str) -> str:
+    q = str(query)
+    if not _is_sanction_query(q):
+        return q
+    expansion = (
+        " xử phạt vi phạm hành chính biện pháp xử lý hành chính cai nghiện bắt buộc "
+        "pháp lệnh nghị định luật phòng chống ma túy trách nhiệm hình sự điều khoản"
+    )
+    return q + expansion
+
+
+def _source_boost(intent: str, source_type: str, sanction_query: bool = False) -> float:
     source_type = (source_type or "unknown").lower()
+
+    if sanction_query:
+        if source_type == "legal":
+            return 2.35
+        if source_type == "news":
+            return 0.35
 
     if intent == "legal":
         if source_type == "legal":
-            return 1.45
+            return 1.65
         if source_type == "news":
-            return 0.72
+            return 0.62
 
     if intent == "news":
         if source_type == "news":
@@ -104,26 +143,41 @@ def _source_boost(intent: str, source_type: str) -> float:
     return 1.0
 
 
+def _metadata_blob(meta: dict) -> str:
+    return " ".join(str(meta.get(k, "")) for k in ["title", "source", "doc_id", "path", "news_group"]).lower()
+
+
 def retrieve(query: str, top_k: int = 6) -> list[dict]:
     chunks = load_chunks()
     bm25 = _bm25()
-    raw_scores = bm25.get_scores(_tokens(query))
+    search_query = _expanded_query(query)
+    raw_scores = bm25.get_scores(_tokens(search_query))
     intent = _query_intent(query)
+    sanction_query = _is_sanction_query(query)
 
     scored = []
+    query_terms = [t for t in _tokens(search_query) if len(t) >= 4]
     for idx, raw_score in enumerate(raw_scores):
         item = chunks[idx]
         meta = item.get("metadata", {}) or {}
         source_type = meta.get("source_type") or meta.get("type") or "unknown"
-        adjusted_score = float(raw_score) * _source_boost(intent, source_type)
+        title_blob = _metadata_blob(meta)
+        content_blob = str(item.get("content", "")).lower()
+        blob = title_blob + " " + content_blob[:1200]
 
-        # Small title/path boost when the document title/source contains query terms.
-        title_blob = " ".join(
-            str(meta.get(k, "")) for k in ["title", "source", "doc_id", "path", "news_group"]
-        ).lower()
-        query_terms = [t for t in _tokens(query) if len(t) >= 4]
+        adjusted_score = float(raw_score) * _source_boost(intent, source_type, sanction_query)
+
+        # Title/path boost when document title/source contains query terms.
         overlap = sum(1 for t in query_terms if t in title_blob)
-        adjusted_score += overlap * 0.15
+        adjusted_score += overlap * 0.18
+
+        if intent == "legal" or sanction_query:
+            legal_signals = sum(1 for term in LEGAL_SIGNAL_TERMS if term in blob)
+            adjusted_score += legal_signals * (0.28 if sanction_query else 0.18)
+
+        if sanction_query and (source_type or "").lower() == "news":
+            incident_hits = sum(1 for term in NEWS_INCIDENT_TERMS if term in blob)
+            adjusted_score -= incident_hits * 0.35
 
         scored.append((idx, adjusted_score))
 
@@ -133,7 +187,8 @@ def retrieve(query: str, top_k: int = 6) -> list[dict]:
     results = []
     for idx, score in ranked:
         item = dict(chunks[idx])
-        item["score"] = round(float(score) / max_score, 4)
+        item["score"] = round(max(float(score), 0.0) / max_score, 4)
         item["retrieval_intent"] = intent
+        item["sanction_query"] = sanction_query
         results.append(item)
     return results
