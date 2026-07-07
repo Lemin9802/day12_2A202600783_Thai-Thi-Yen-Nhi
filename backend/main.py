@@ -191,6 +191,15 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _ensure_json_utf8(request: Request, call_next):
+    response = await call_next(request)
+    content_type = response.headers.get("content-type", "")
+    if content_type.startswith("application/json") and "charset=" not in content_type.lower():
+        response.headers["content-type"] = "application/json; charset=utf-8"
+    return response
+
+
 # ── Auth helper ────────────────────────────────────────────────────────────────
 def _require_auth(
     request: Request,

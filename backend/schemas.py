@@ -103,8 +103,35 @@ def _repair_text_values(value: Any) -> Any:
     return value
 
 
+
+_INTERNAL_OUTPUT_TERMS = (
+    "dataset", "rag", "backend", "metadata", "score", "provider", "fallback",
+    "key context", "summary",
+)
+
+
+def _strip_internal_output_text(value: str) -> str:
+    text = str(value or "")
+    patterns = (
+        r"\bKey context for RAG\b\s*[-:]*\s*",
+        r"\bKey context\b\s*[-:]*\s*",
+        r"\bSummary\b\s*[-:]*\s*",
+        r"\bRAG\b\s*[-:]*\s*",
+        r"\b(source_type|score|metadata)\s*=\s*[\w.:-]+",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip() if "\n" not in text else re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _contains_internal_output_text(value: str | None) -> bool:
+    lowered = str(value or "").lower()
+    return any(term in lowered for term in _INTERNAL_OUTPUT_TERMS)
+
+
 def _clean_answer_text(value: str) -> str:
     text = (value or "").replace("\r\n", "\n")
+    text = _strip_internal_output_text(text)
     text = re.sub(r"\s+\*\*Source:\*\*.*", "", text)
     text = re.sub(r"\s+\*\*Date:\*\*.*", "", text)
     text = re.sub(r"\s+\*\*URL:\*\*\s*https?://\S+", "", text)
@@ -132,6 +159,8 @@ def _is_low_quality_snippet(value: str | None) -> bool:
     if not value or len(str(value).strip()) < 25:
         return True
     text = str(value).strip()
+    if _contains_internal_output_text(text):
+        return True
     if "---" in text or re.search(r"\b[a-z]+-[a-z]+-[a-z]+", text.lower()):
         return True
     letters = re.findall(r"[A-Za-zÀ-ỹ]", text)

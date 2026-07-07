@@ -83,8 +83,82 @@ def _source_title(item: Any, fallback: str) -> str:
     return fallback
 
 
+
+_HIDDEN_USER_TERMS = (
+    "dataset", "rag", "backend", "metadata", "score", "provider", "fallback",
+)
+
+
+def _strip_internal_context_labels(text: str) -> str:
+    text = str(text or "")
+    patterns = (
+        r"\bKey context for RAG\b\s*[-:]*\s*",
+        r"\bKey context\b\s*[-:]*\s*",
+        r"\bSummary\b\s*[-:]*\s*",
+        r"\bRAG\b\s*[-:]*\s*",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _has_hidden_user_term(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(term in lowered for term in _HIDDEN_USER_TERMS) or "key context" in lowered or "summary" in lowered
+
+
+def _is_identity_question(question: str) -> bool:
+    q = str(question or "").lower()
+    return any(term in q for term in (
+        "maithuylaw là gì", "mai thuy law là gì", "mai thúy law là gì", "mai thuylaw là gì",
+        "maithuylaw nghĩa là gì", "mai thuy law nghĩa là gì", "mai thúy law nghĩa là gì",
+        "vì sao tên maithuylaw", "vi sao ten maithuylaw", "tại sao tên maithuylaw", "tai sao ten maithuylaw",
+        "tên project nghĩa là gì", "ten project nghia la gi", "ý nghĩa tên dự án", "y nghia ten du an",
+    ))
+
+
+def _identity_answer(language: str) -> str:
+    if language == "en":
+        return (
+            "MaiThuyLaw is a project name combining “Mai Thúy” and “Law”. "
+            "“Mai Thúy” is Vietnamese wordplay/slang that sounds like “ma túy”, "
+            "while “Law” means legal/law. The name reflects the project idea: an AI assistant "
+            "that helps users look up and understand Vietnamese legal, policy, and official information related to drugs."
+        )
+    return (
+        "MaiThuyLaw là tên dự án ghép từ “Mai Thúy” và “Law”. "
+        "“Mai Thúy” là cách nói lái/đọc trại vui của “ma túy” trong tiếng Việt, còn “Law” là luật. "
+        "Tên này thể hiện idea của project: một trợ lý AI hỗ trợ tra cứu, giải thích thông tin pháp luật, "
+        "chính sách và nguồn tin chính thống liên quan đến ma túy tại Việt Nam."
+    )
+
+
+def _is_drug_definition_question(question: str) -> bool:
+    q = str(question or "").lower()
+    return any(term in q for term in (
+        "ma túy là gì", "ma tuy la gi", "chất ma túy là gì", "chat ma tuy la gi",
+        "định nghĩa ma túy", "dinh nghia ma tuy",
+    ))
+
+
+def _is_low_value_for_question(question: str, sentence: str) -> bool:
+    lowered = str(sentence or "").lower()
+    if _has_hidden_user_term(lowered):
+        return True
+    if _is_drug_definition_question(question):
+        concept_terms = ("chất ma túy", "chat ma tuy", "danh mục", "danh muc", "tiền chất", "tien chat")
+        generic_policy_terms = (
+            "nhiệm vụ", "nhiem vu", "phòng, chống", "phong, chong", "công an", "cong an",
+            "tái hòa nhập", "tai hoa nhap", "hệ thống chính trị", "he thong chinh tri",
+        )
+        if any(term in lowered for term in generic_policy_terms) and not any(term in lowered for term in concept_terms):
+            return True
+    return False
+
+
 def _clean_context_text(text: str) -> str:
     text = _clean_raw_chunk_text(text)
+    text = _strip_internal_context_labels(text)
     text = re.sub(r"Do not use for[^.]+\.?", "", text, flags=re.I)
     text = re.sub(r"Không dùng thay cho căn cứ pháp luật chính thức\s*-?", "", text, flags=re.I)
     return text.strip()
@@ -228,9 +302,12 @@ def _sentence_candidates(text: str) -> list[str]:
         sentence = re.sub(r"\s+", " ", piece).strip(" -•\t\r\n")
         if len(sentence) < 45:
             continue
+        sentence = _strip_internal_context_labels(sentence)
+        if len(sentence) < 45:
+            continue
         if re.search(r"\b[a-z]+-[a-z]+-[a-z]+", sentence.lower()):
             continue
-        if sentence not in out:
+        if not _has_hidden_user_term(sentence) and sentence not in out:
             out.append(sentence)
     return out
 
@@ -244,7 +321,7 @@ def _fallback_answer(question: str, retrieved: list[Any], attachments: list[Any]
     for block in context.split("\n\n")[:5]:
         body = " ".join(block.splitlines()[1:])
         for sentence in _sentence_candidates(body):
-            if sentence not in snippets:
+            if not _is_low_value_for_question(question, sentence) and sentence not in snippets:
                 snippets.append(sentence)
             if len(snippets) >= 4:
                 break
@@ -306,6 +383,9 @@ def generate_answer(*args: Any, **kwargs: Any) -> str:
     attachments = kwargs.get("attachments") or kwargs.get("attachment_contexts") or []
     language = kwargs.get("language") or kwargs.get("lang") or "vi"
     language = "en" if str(language).lower().startswith("en") else "vi"
+
+    if _is_identity_question(question):
+        return _identity_answer(language)
 
     retrieved_list = _as_list(retrieved)
     attachment_list = _as_list(attachments)
