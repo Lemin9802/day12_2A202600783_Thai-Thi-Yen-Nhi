@@ -10,7 +10,8 @@ services:
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
       - AGENT_API_KEY=local-dev-key
-      - RATE_LIMIT_PER_MINUTE=10
+      - MAITHUYLAW_SESSION_SECRET=local-dev-session-secret-change-in-production
+      - MAITHUYLAW_RATE_LIMIT_PER_MINUTE=10
       - MONTHLY_BUDGET_USD=10.0
       - LOG_LEVEL=INFO
     ports:
@@ -19,7 +20,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 30s
       timeout: 10s
       retries: 3

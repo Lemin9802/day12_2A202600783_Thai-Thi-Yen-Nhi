@@ -16,22 +16,24 @@ from pydantic import BaseModel, Field
 
 from backend.agent import generate_answer
 from backend.attachments import (
+    delete_attachments_for_chat,
     get_attachment,
     list_attachments_for_chat,
     resolve_attachments,
     save_attachment,
 )
-from backend.config import APP_NAME, MIN_SCORE, TOP_K
+from backend.config import APP_NAME, DATASET_PATH, MIN_SCORE, TOP_K
 from backend.dataset import dataset_summary, retrieve
 from backend.file_checker import evaluate_uploaded_text, extract_upload_text, fetch_link_text
 from backend.guards import detect_safety_issue, is_in_domain
-from backend.security import auth_and_quota, verify_api_key as _verify_api_key_only
-from backend.realtime import (
-    extract_urls,
-    realtime_enabled,
-    realtime_unavailable_answer,
-    wants_realtime,
+from backend.security import (
+    apply_session_cookie,
+    auth_and_quota,
+    effective_user_id,
+    session_secret_configured,
+    verify_api_key as _verify_api_key_only,
 )
+from backend.realtime import realtime_enabled, realtime_unavailable_answer, wants_realtime
 from backend.schemas import (
     ChatDetail,
     ChatRequest,
@@ -45,6 +47,7 @@ from backend.schemas import (
     Source,
 )
 from backend.title import generate_chat_title
+from backend.persistence import storage_status
 from backend.store import (
     add_message,
     create_chat,
@@ -56,7 +59,6 @@ from backend.store import (
     rewrite_with_memory,
 )
 
-# ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format='{"time":"%(asctime)s","level":"%(levelname)s","message":"%(message)s"}',
@@ -67,7 +69,6 @@ START_TIME = time.time()
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
 
-# ── Budget guard (ported from app/cost_guard.py) ───────────────────────────────
 from dataclasses import dataclass, field as dc_field
 
 PRICE_PER_REQUEST_USD = 0.001
@@ -131,7 +132,6 @@ def get_usage(user_id: str) -> dict:
     }
 
 
-# ── CORS origins ──────────────────────────────────────────────────────────────
 def _cors_origins() -> list[str]:
     base = [
         "http://127.0.0.1:5173",
@@ -147,33 +147,38 @@ def _cors_origins() -> list[str]:
     return base
 
 
-# ── App lifespan ───────────────────────────────────────────────────────────────
 _is_ready = False
 _dataset_chunks = 0
+_startup_error: str | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _is_ready, _dataset_chunks
+    global _is_ready, _dataset_chunks, _startup_error
+    _is_ready = False
+    _startup_error = None
     try:
         summary = dataset_summary()
-        _dataset_chunks = summary.get("chunks", 0)
+        _dataset_chunks = int(summary.get("chunks", 0) or 0)
+        if _dataset_chunks <= 0:
+            raise RuntimeError("RAG dataset is empty")
+        _is_ready = True
         logger.info(json.dumps({
             "event": "startup",
             "app": APP_NAME,
             "version": APP_VERSION,
             "environment": ENVIRONMENT,
             "dataset_chunks": _dataset_chunks,
-        }))
-    except Exception as e:
-        logger.warning(json.dumps({"event": "startup_dataset_warning", "error": str(e)}))
-    _is_ready = True
+            "storage": storage_status(),
+        }, ensure_ascii=False))
+    except Exception as exc:
+        _startup_error = str(exc)
+        logger.exception("Startup validation failed")
     yield
     _is_ready = False
     logger.info(json.dumps({"event": "shutdown"}))
 
 
-# ── FastAPI app ────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="MaiThuyLaw AI",
     version=APP_VERSION,
@@ -192,25 +197,23 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def _ensure_json_utf8(request: Request, call_next):
+async def _response_hardening(request: Request, call_next):
     response = await call_next(request)
     content_type = response.headers.get("content-type", "")
     if content_type.startswith("application/json") and "charset=" not in content_type.lower():
         response.headers["content-type"] = "application/json; charset=utf-8"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    apply_session_cookie(request, response)
     return response
 
 
-# ── Auth helper ────────────────────────────────────────────────────────────────
-def _require_auth(
-    request: Request,
-    user_id: str,
-    x_api_key: str | None,
-) -> None:
-    """Uniform auth + quota for all /api/* endpoints."""
-    auth_and_quota(request, user_id=user_id, x_api_key=x_api_key)
+def _require_auth(request: Request, user_id: str, x_api_key: str | None) -> str:
+    """Authenticate, consume quota, and return the server-resolved owner ID."""
+    return auth_and_quota(request, user_id=user_id, x_api_key=x_api_key)
 
 
-# ── /health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {
@@ -220,37 +223,37 @@ def health():
         "environment": ENVIRONMENT,
         "uptime_seconds": round(time.time() - START_TIME, 1),
         "dataset_chunks": _dataset_chunks,
+        "storage": storage_status(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
-# ── /ready ─────────────────────────────────────────────────────────────────────
 @app.get("/ready")
 def ready():
-    if not _is_ready:
-        raise HTTPException(status_code=503, detail="Service not ready")
-    gemini_key = bool(os.getenv("GEMINI_API_KEY", "").strip())
-    return {
-        "ready": True,
+    checks = {
+        "dataset_available": DATASET_PATH.exists(),
         "dataset_chunks": _dataset_chunks,
-        "gemini_configured": gemini_key,
+        "storage": storage_status(),
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()),
+        "session_secret_configured": session_secret_configured(),
     }
+    if not _is_ready or not checks["dataset_available"] or _dataset_chunks <= 0:
+        raise HTTPException(
+            status_code=503,
+            detail={"ready": False, "error": _startup_error or "Required data is unavailable", "checks": checks},
+        )
+    return {"ready": True, "checks": checks}
 
 
-# ── /usage ─────────────────────────────────────────────────────────────────────
 @app.get("/usage")
 def usage_endpoint(
     request: Request,
     user_id: str = Query("demo-user"),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    _require_auth(request, user_id, x_api_key)
-    return get_usage(user_id)
+    uid = _require_auth(request, user_id, x_api_key)
+    return get_usage(uid)
 
-
-# ── /ask  (legacy compatibility wrapper) ──────────────────────────────────────
-# Keeps the old response shape: question, answer, rate_limit, budget, served_by, storage.
-# Internally delegates to the /api/chat logic.
 
 class _LegacyAskRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000)
@@ -263,22 +266,13 @@ async def legacy_ask(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    """Backward-compatible /ask — delegates to /api/chat, returns old response shape.
-
-    Auth/quota is handled exactly once inside chat(). This wrapper only verifies
-    the API key (no quota consumed) so the inner chat() call is the single point
-    that increments the rate-limit counter.
-    """
     uid = body.user_id or "default-user"
-    # Key check only — no quota consumed here. chat() will do full auth_and_quota.
     _verify_api_key_only(request, x_api_key)
     req = ChatRequest(message=body.question, user_id=uid)
     result = await chat(req, request, x_api_key=x_api_key)
-
-    # Build rate_limit metadata for response (read current config, not counters)
     rate_limit_pm = int(os.getenv("MAITHUYLAW_RATE_LIMIT_PER_MINUTE", "10"))
-    budget_info = get_usage(uid)
-
+    resolved_uid = effective_user_id(request, uid)
+    budget_info = get_usage(resolved_uid)
     return {
         "user_id": uid,
         "question": body.question,
@@ -287,12 +281,8 @@ async def legacy_ask(
         "refused": result.refused,
         "history_count": 0,
         "served_by": APP_NAME,
-        "storage": "json",
-        "rate_limit": {
-            "limit": rate_limit_pm,
-            "window_seconds": 60,
-            "note": "per-user sliding window",
-        },
+        "storage": storage_status()["backend"],
+        "rate_limit": {"limit": rate_limit_pm, "window_seconds": 60, "note": "per-user sliding window"},
         "budget": {
             "spent_usd": budget_info["spent_usd"],
             "monthly_budget_usd": budget_info["monthly_budget_usd"],
@@ -302,30 +292,24 @@ async def legacy_ask(
     }
 
 
-# ── /api/chats — unified store (backend/store.py only) ────────────────────────
-# ALL endpoints require auth for consistency.
-
 @app.get("/api/chats")
 def api_list_chats(
     request: Request,
     user_id: str = Query("demo-user"),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    _require_auth(request, user_id, x_api_key)
-    chats = list_chats(user_id=user_id)
-    return {"chats": chats}
+    uid = _require_auth(request, user_id, x_api_key)
+    return {"chats": list_chats(user_id=uid)}
 
 
 @app.post("/api/chats")
 def api_create_chat(
+    req: CreateChatRequest,
     request: Request,
-    payload: dict = Body(default_factory=dict),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    uid = str(payload.get("user_id") or "demo-user")
-    _require_auth(request, uid, x_api_key)
-    title = str(payload.get("title") or "Cuộc trò chuyện mới")
-    return create_chat(user_id=uid, title=title)
+    uid = _require_auth(request, req.user_id, x_api_key)
+    return create_chat(user_id=uid, title=req.title or "Cuộc trò chuyện mới")
 
 
 @app.get("/api/chats/{chat_id}")
@@ -335,19 +319,10 @@ def api_get_chat(
     user_id: str = Query("demo-user"),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    _require_auth(request, user_id, x_api_key)
-    chat_obj = get_chat(chat_id, user_id=user_id)
+    uid = _require_auth(request, user_id, x_api_key)
+    chat_obj = get_chat(chat_id, user_id=uid)
     if not chat_obj:
-        # Auto-create lightweight shell so frontend doesn't 404 on new chat
-        now = datetime.now(timezone.utc).isoformat()
-        return {
-            "id": chat_id,
-            "user_id": user_id,
-            "title": "Cuộc trò chuyện mới",
-            "messages": [],
-            "created_at": now,
-            "updated_at": now,
-        }
+        raise HTTPException(status_code=404, detail="Chat not found")
     return chat_obj
 
 
@@ -358,8 +333,8 @@ def api_rename_chat(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    _require_auth(request, req.user_id, x_api_key)
-    updated = rename_chat(chat_id, title=req.title, user_id=req.user_id)
+    uid = _require_auth(request, req.user_id, x_api_key)
+    updated = rename_chat(chat_id, title=req.title, user_id=uid)
     if not updated:
         raise HTTPException(status_code=404, detail="Chat not found")
     return updated
@@ -372,27 +347,29 @@ def api_delete_chat(
     user_id: str = Query("demo-user"),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    _require_auth(request, user_id, x_api_key)
-    ok = delete_chat(chat_id, user_id=user_id)
-    if not ok:
+    uid = _require_auth(request, user_id, x_api_key)
+    if not delete_chat(chat_id, user_id=uid):
         raise HTTPException(status_code=404, detail="Chat not found")
+    delete_attachments_for_chat(chat_id, user_id=uid)
     return {"deleted": True, "chat_id": chat_id}
 
 
-# ── Attachments ────────────────────────────────────────────────────────────────
+def _validated_upload_result(result: dict) -> dict:
+    if result.get("ok"):
+        return result
+    raise HTTPException(status_code=int(result.get("status_code") or 422), detail=result.get("error") or "Không đọc được tệp.")
+
+
 @app.post("/api/upload-check")
 async def api_upload_check(
     request: Request,
     file: UploadFile = File(...),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> dict:
-    uid = request.headers.get("X-User-ID") or "demo-user"
-    _require_auth(request, uid, x_api_key)
-    raw = await file.read()
-    text = await extract_upload_text(raw, filename=file.filename or "")
-    if not text.strip():
-        return {"ok": False, "error": "Không đọc được nội dung tệp."}
-    return await evaluate_uploaded_text(text, filename=file.filename or "")
+    claimed = request.headers.get("X-User-ID") or "demo-user"
+    _require_auth(request, claimed, x_api_key)
+    extracted = _validated_upload_result(await extract_upload_text(file))
+    return {"ok": True, **evaluate_uploaded_text(extracted["text"]), "filename": extracted["filename"], "size_bytes": extracted["size_bytes"]}
 
 
 @app.post("/api/attachments/upload")
@@ -403,26 +380,19 @@ async def api_attachment_upload(
     chat_id: str | None = Form(None),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> dict:
-    _require_auth(request, user_id, x_api_key)
-    raw = await file.read()
-    text = await extract_upload_text(raw, filename=file.filename or "")
-    check = await evaluate_uploaded_text(text, filename=file.filename or "")
+    uid = _require_auth(request, user_id, x_api_key)
+    if chat_id and not get_chat(chat_id, user_id=uid):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    extracted = _validated_upload_result(await extract_upload_text(file))
+    evaluation = evaluate_uploaded_text(extracted["text"])
     return save_attachment(
-        user_id=user_id,
+        user_id=uid,
         chat_id=chat_id,
-        name=file.filename or "upload",
+        name=extracted["filename"],
         kind="file",
-        url=None,
-        text=text,
-        size_bytes=len(raw),
-        verdict=check.get("verdict", "needs_review"),
-        reason=check.get("reason"),
-        preview=check.get("preview"),
-        domain_score=check.get("domain_score", 0.0),
-        official_score=check.get("official_score", 0.0),
-        dataset_match_score=check.get("dataset_match_score", 0.0),
-        source_matches=check.get("source_matches", []),
-        safety_reason=check.get("safety_reason"),
+        text=extracted["text"],
+        size_bytes=extracted["size_bytes"],
+        evaluation=evaluation,
     )
 
 
@@ -432,34 +402,23 @@ async def api_attachment_link(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> dict:
-    _require_auth(request, req.user_id, x_api_key)
+    uid = _require_auth(request, req.user_id, x_api_key)
+    if req.chat_id and not get_chat(req.chat_id, user_id=uid):
+        raise HTTPException(status_code=404, detail="Chat not found")
     fetched = await fetch_link_text(req.url)
     if not fetched.get("ok"):
-        return {
-            "id": None, "user_id": req.user_id, "chat_id": req.chat_id,
-            "name": req.url, "kind": "link", "url": req.url,
-            "verdict": "rejected", "reason": fetched.get("error") or "Không đọc được link.",
-            "safety_reason": None, "domain_score": 0.0, "official_score": 0.0,
-            "dataset_match_score": 0.0, "source_matches": [], "preview": "", "text": "",
-        }
-    text = fetched["text"]
-    check = await evaluate_uploaded_text(text, filename=req.url)
+        raise HTTPException(status_code=400, detail=fetched.get("error") or "Không đọc được link.")
+    canonical_url = fetched["url"]
+    evaluation = evaluate_uploaded_text(fetched["text"], source_url=canonical_url)
     return save_attachment(
-        user_id=req.user_id,
+        user_id=uid,
         chat_id=req.chat_id,
-        name=req.title or req.url,
+        name=req.title or canonical_url,
         kind="link",
-        url=req.url,
-        text=f"URL: {req.url}\n\n{text}",
-        size_bytes=len(text.encode("utf-8")),
-        verdict=check.get("verdict", "needs_review"),
-        reason=check.get("reason"),
-        preview=check.get("preview"),
-        domain_score=check.get("domain_score", 0.0),
-        official_score=check.get("official_score", 0.0),
-        dataset_match_score=check.get("dataset_match_score", 0.0),
-        source_matches=check.get("source_matches", []),
-        safety_reason=check.get("safety_reason"),
+        url=canonical_url,
+        text=fetched["text"],
+        size_bytes=len(fetched["text"].encode("utf-8")),
+        evaluation=evaluation,
     )
 
 
@@ -470,11 +429,11 @@ def api_get_attachment(
     user_id: str = Query("demo-user"),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> dict:
-    _require_auth(request, user_id, x_api_key)
-    att = get_attachment(attachment_id, user_id=user_id)
-    if not att:
+    uid = _require_auth(request, user_id, x_api_key)
+    attachment = get_attachment(attachment_id, user_id=uid)
+    if not attachment:
         raise HTTPException(status_code=404, detail="Attachment not found")
-    return att
+    return attachment
 
 
 @app.get("/api/chats/{chat_id}/attachments")
@@ -484,11 +443,12 @@ def api_list_chat_attachments(
     user_id: str = Query("demo-user"),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> list[dict]:
-    _require_auth(request, user_id, x_api_key)
-    return list_attachments_for_chat(chat_id, user_id=user_id)
+    uid = _require_auth(request, user_id, x_api_key)
+    if not get_chat(chat_id, user_id=uid):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return list_attachments_for_chat(chat_id, user_id=uid)
 
 
-# ── Source helpers ─────────────────────────────────────────────────────────────
 _DATASET_SOURCE_REGISTRY: dict | None = None
 
 
@@ -497,28 +457,17 @@ def _load_dataset_source_registry() -> dict:
     if _DATASET_SOURCE_REGISTRY is not None:
         return _DATASET_SOURCE_REGISTRY
     registry: dict = {}
-    dataset_path = (
-        Path(__file__).resolve().parents[1]
-        / "data" / "maithuylaw_dataset" / "data" / "index" / "rag_chunks.json"
-    )
+    dataset_path = Path(__file__).resolve().parents[1] / "data" / "maithuylaw_dataset" / "data" / "index" / "rag_chunks.json"
     try:
         chunks = json.loads(dataset_path.read_text(encoding="utf-8"))
     except Exception:
         _DATASET_SOURCE_REGISTRY = registry
         return registry
-
     for chunk in chunks:
         meta = chunk.get("metadata") or {}
         doc_id = meta.get("doc_id") or meta.get("source_id") or chunk.get("doc_id") or ""
-        title = (
-            meta.get("title") or meta.get("source_title")
-            or chunk.get("title") or meta.get("source") or doc_id
-        )
-        url = (
-            meta.get("canonical_url") or meta.get("url")
-            or meta.get("source_url") or meta.get("link")
-            or chunk.get("canonical_url") or chunk.get("url") or ""
-        )
+        title = meta.get("title") or meta.get("source_title") or chunk.get("title") or meta.get("source") or doc_id
+        url = meta.get("canonical_url") or meta.get("url") or meta.get("source_url") or meta.get("link") or chunk.get("canonical_url") or chunk.get("url") or ""
         info = {
             "doc_id": doc_id,
             "title": title,
@@ -531,7 +480,6 @@ def _load_dataset_source_registry() -> dict:
             k = str(key or "").strip()
             if k and k not in registry:
                 registry[k] = info
-
     _DATASET_SOURCE_REGISTRY = registry
     return registry
 
@@ -555,10 +503,7 @@ def _normalize_response_sources(sources: list) -> list[dict]:
         d = _source_to_dict(item)
         doc_id = d.get("doc_id") or d.get("source_id") or ""
         title = d.get("title") or d.get("source_title") or doc_id or "Nguồn tham khảo"
-        url = (
-            d.get("canonical_url") or d.get("url")
-            or d.get("source_url") or d.get("link") or ""
-        )
+        url = d.get("canonical_url") or d.get("url") or d.get("source_url") or d.get("link") or ""
         reg = registry.get(doc_id) or {}
         publisher = d.get("publisher") or reg.get("publisher") or ""
         official_domain = d.get("official_domain") or reg.get("official_domain") or ""
@@ -591,26 +536,18 @@ def _reduce_citation_spam(answer: str, sources: list[dict]) -> str:
 def _normalize_citations(answer: str, sources: list[dict]) -> str:
     if not answer or not sources:
         return answer
-
     def fix(match):
         nums = sorted(set(int(n) for n in re.findall(r"\d+", match.group(1))))
         valid = [n for n in nums if 1 <= n <= len(sources)]
         return "[" + ",".join(str(n) for n in valid) + "]" if valid else ""
-
     return re.sub(r"\[([0-9,\s]+)\]", fix, answer)
 
 
 def _source_label(item: dict, index: int) -> Source:
     meta = item.get("metadata") or {}
     doc_id = meta.get("doc_id") or item.get("doc_id") or ""
-    title = (
-        meta.get("title") or meta.get("source_title")
-        or meta.get("source") or doc_id or f"Nguồn {index}"
-    )
-    url = (
-        meta.get("canonical_url") or meta.get("url")
-        or meta.get("source_url") or meta.get("link") or ""
-    )
+    title = meta.get("title") or meta.get("source_title") or meta.get("source") or doc_id or f"Nguồn {index}"
+    url = meta.get("canonical_url") or meta.get("url") or meta.get("source_url") or meta.get("link") or ""
     return Source(
         title=title,
         canonical_url=url or None,
@@ -637,124 +574,101 @@ def _request_language(req: ChatRequest) -> str:
     return "en" if str(lang).lower().startswith("en") else "vi"
 
 
-# ── /api/chat — main product endpoint ─────────────────────────────────────────
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(
     req: ChatRequest,
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> ChatResponse:
-    _require_auth(request, req.user_id, x_api_key)
-    check_budget(req.user_id)
-
+    uid = _require_auth(request, req.user_id, x_api_key)
+    check_budget(uid)
     message = req.message.strip()
-    active = ensure_chat(req.chat_id, req.user_id, first_message=message)
+    active = ensure_chat(req.chat_id, uid, first_message=message)
+    if active is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
     chat_id = active["id"]
 
-    # Collect link attachments from message body
-    message_urls = extract_urls(message)
-    merged_links: list[str] = []
-    for url in list(req.links or []) + message_urls:
-        if url not in merged_links:
-            merged_links.append(url)
-
-    saved_links, failed_links = [], []
-    for url in merged_links:
-        fetched = await fetch_link_text(url)
-        if fetched.get("ok"):
-            saved_links.append(save_attachment(
-                user_id=req.user_id, chat_id=chat_id,
-                name=url, kind="link", url=url,
-                text=f"URL: {url}\n\n{fetched['text']}",
-                size_bytes=len(fetched["text"].encode("utf-8")),
-            ))
-        else:
-            failed_links.append({
-                "id": None, "user_id": req.user_id, "chat_id": chat_id,
-                "name": url, "kind": "link", "url": url, "verdict": "rejected",
-                "reason": fetched.get("error") or "Không đọc được link.",
-                "safety_reason": None, "domain_score": 0.0, "official_score": 0.0,
-                "dataset_match_score": 0.0, "source_matches": [], "preview": "", "text": "",
-            })
-
-    all_ids = list(req.attachment_ids or []) + [a["id"] for a in saved_links if a.get("id")]
-    attachments = resolve_attachments(all_ids, user_id=req.user_id)
-    attachments.extend(failed_links)
-
-    attachment_text = "\n\n".join(a.get("text", "")[:2500] for a in attachments)
-
-    # Safety guard — runs before Gemini
-    safety_reason = detect_safety_issue(message + "\n" + attachment_text[:3000])
+    safety_reason = detect_safety_issue(message)
     if safety_reason:
         from backend.guards import REFUSAL_MESSAGE
-        add_message(chat_id, "user", message, req.user_id)
-        add_message(chat_id, "assistant", REFUSAL_MESSAGE, req.user_id)
-        record_budget_usage(req.user_id)
-        logger.info(json.dumps({"event": "safety_refused", "user_id": req.user_id}))
-        return ChatResponse(chat_id=chat_id, refused=True, reason=safety_reason, answer=REFUSAL_MESSAGE, sources=[])
-
-    # Domain guard
-    attachment_allows_domain = any(
-        a.get("verdict") in {"accepted", "needs_review"} and float(a.get("domain_score") or 0) >= 0.3
-        for a in attachments
-    )
-    if not attachments and not is_in_domain(message):
-        out_msg = (
-            "Mình chỉ hỗ trợ tra cứu thông tin pháp luật, chính sách và tin tức chính thống "
-            "liên quan đến ma túy. Bạn hãy đặt câu hỏi trong phạm vi này nhé."
+        response = ChatResponse(
+            chat_id=chat_id,
+            refused=True,
+            reason=safety_reason,
+            answer=REFUSAL_MESSAGE,
+            sources=[],
+            evidence_level="Câu hỏi nhạy cảm",
+            confidence=1.0,
+            safety={"allowed": False, "risk_level": "disallowed", "reason": safety_reason},
         )
-        add_message(chat_id, "user", message, req.user_id)
-        add_message(chat_id, "assistant", out_msg, req.user_id)
-        return ChatResponse(chat_id=chat_id, refused=True, reason="out_of_domain", answer=out_msg, sources=[])
+        add_message(chat_id, "user", message, uid)
+        add_message(chat_id, "assistant", response.answer, uid, refused=True, reason=response.reason, evidence_level=response.evidence_level, confidence=response.confidence, safety=response.safety, follow_up_suggestions=response.follow_up_suggestions)
+        record_budget_usage(uid)
+        return response
 
-    if attachments and not attachment_allows_domain and not is_in_domain(message):
-        out_msg = (
-            "Nội dung đính kèm chưa đủ phù hợp với phạm vi pháp luật về ma túy. "
-            "Bạn có thể gửi nguồn chính thống hơn hoặc hỏi lại trong đúng phạm vi."
+    saved_link_ids: list[str] = []
+    for link in req.links:
+        fetched = await fetch_link_text(link)
+        if not fetched.get("ok"):
+            continue
+        evaluation = evaluate_uploaded_text(fetched["text"], source_url=fetched["url"])
+        saved = save_attachment(
+            user_id=uid,
+            chat_id=chat_id,
+            name=fetched["url"],
+            kind="link",
+            url=fetched["url"],
+            text=fetched["text"],
+            size_bytes=len(fetched["text"].encode("utf-8")),
+            evaluation=evaluation,
         )
-        add_message(chat_id, "user", message, req.user_id)
-        add_message(chat_id, "assistant", out_msg, req.user_id)
-        return ChatResponse(chat_id=chat_id, refused=True, reason="attachment_out_of_domain", answer=out_msg, sources=[])
+        if saved.get("id") and saved.get("verdict") == "accepted":
+            saved_link_ids.append(saved["id"])
 
-    # Retrieval
-    retrieval_query = rewrite_with_memory(message, chat_id, req.user_id)
+    all_ids = list(req.attachment_ids) + saved_link_ids
+    attachments = resolve_attachments(all_ids, user_id=uid, allowed_verdicts=("accepted",))
+    attachment_text = "\n\n".join(item.get("text", "")[:2500] for item in attachments)
+    attachment_allows_domain = any(float(item.get("domain_score") or 0) >= 0.2 for item in attachments)
+    if not is_in_domain(message) and not attachment_allows_domain:
+        out_msg = "Mình chỉ hỗ trợ tra cứu thông tin pháp luật, chính sách và nguồn tin chính thống liên quan đến ma túy tại Việt Nam. Bạn hãy đặt câu hỏi trong phạm vi này nhé."
+        response = ChatResponse(chat_id=chat_id, refused=True, reason="out_of_domain", answer=out_msg, sources=[], evidence_level="Ngoài phạm vi hỗ trợ", confidence=1.0)
+        add_message(chat_id, "user", message, uid)
+        add_message(chat_id, "assistant", response.answer, uid, refused=True, reason=response.reason, evidence_level=response.evidence_level, confidence=response.confidence, safety=response.safety, follow_up_suggestions=response.follow_up_suggestions)
+        return response
+
+    retrieval_query = rewrite_with_memory(message, chat_id, uid)
     if attachment_text:
-        retrieval_query += "\n\nNội dung đính kèm:\n" + attachment_text[:2500]
-
+        retrieval_query += "\n\nNội dung nguồn đã xác minh:\n" + attachment_text[:2500]
     dataset_results = retrieve(retrieval_query, top_k=TOP_K)
-    dataset_sources = [_source_label(item, i) for i, item in enumerate(dataset_results, start=1)]
-    attachment_sources = [_attachment_source(att, i) for i, att in enumerate(attachments, start=1)]
-
+    dataset_sources = [_source_label(item, index) for index, item in enumerate(dataset_results, start=1)]
+    attachment_sources = [_attachment_source(item, index) for index, item in enumerate(attachments, start=1)]
     language = _request_language(req)
-    answer = generate_answer(
-        message=message,
-        dataset_results=dataset_results,
-        attachments=attachments,
-        language=language,
-    )
-
+    answer = generate_answer(message=message, dataset_results=dataset_results, attachments=attachments, language=language)
     if not attachments and wants_realtime(message) and not realtime_enabled():
         answer = realtime_unavailable_answer(language)
 
-    add_message(chat_id, "user", message, req.user_id)
-    add_message(chat_id, "assistant", answer, req.user_id)
-    record_budget_usage(req.user_id)
-
     normalized = _normalize_response_sources(attachment_sources + dataset_sources)
-    safe_answer = _normalize_citations(answer, normalized)
-    safe_answer = _reduce_citation_spam(safe_answer, normalized)
+    safe_answer = _reduce_citation_spam(_normalize_citations(answer, normalized), normalized)
+    response = ChatResponse(chat_id=chat_id, answer=safe_answer, sources=normalized)
+    add_message(chat_id, "user", message, uid, attachments=[item.get("id") for item in attachments])
+    add_message(
+        chat_id,
+        "assistant",
+        response.answer,
+        uid,
+        sources=response.sources,
+        refused=response.refused,
+        reason=response.reason,
+        evidence_level=response.evidence_level,
+        confidence=response.confidence,
+        safety=response.safety,
+        follow_up_suggestions=response.follow_up_suggestions,
+    )
+    record_budget_usage(uid)
+    logger.info(json.dumps({"event": "chat", "user_id": uid, "chat_id": chat_id, "sources_count": len(normalized)}, ensure_ascii=False))
+    return response
 
-    logger.info(json.dumps({
-        "event": "chat",
-        "user_id": req.user_id,
-        "chat_id": chat_id,
-        "sources_count": len(normalized),
-    }))
 
-    return ChatResponse(chat_id=chat_id, answer=safe_answer, sources=normalized)
-
-
-# ── Generate chat title ────────────────────────────────────────────────────────
 @app.post("/api/chats/{chat_id}/generate-title", response_model=GenerateTitleResponse)
 async def generate_title_for_chat(
     chat_id: str,
@@ -762,38 +676,31 @@ async def generate_title_for_chat(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    _require_auth(request, payload.user_id, x_api_key)
+    uid = _require_auth(request, payload.user_id, x_api_key)
+    if not get_chat(chat_id, user_id=uid):
+        raise HTTPException(status_code=404, detail="Chat not found")
     language = "en" if payload.language.lower().startswith("en") else "vi"
     title = generate_chat_title(payload.message, language)
-    for args in ((chat_id, title, payload.user_id), (chat_id, title)):
-        try:
-            updated = rename_chat(*args)
-            if updated:
-                break
-        except (TypeError, Exception):
-            continue
+    updated = rename_chat(chat_id, title, uid)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Chat not found")
     return GenerateTitleResponse(chat_id=chat_id, title=title)
 
 
-# ── Serve React SPA (frontend/dist) ───────────────────────────────────────────
 _DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 if _DIST.exists():
     _assets = _DIST / "assets"
     if _assets.exists():
         app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
-
-    # Serve favicon and public assets
     for _static_file in ("favicon.png", "favicon.svg", "maithuylaw-logo.png", "maithuylaw-logo.svg"):
         _fp = _DIST / _static_file
         if _fp.exists():
             _path = f"/{_static_file}"
-
             def _make_handler(path=str(_fp)):
                 async def _handler():
                     return FileResponse(path)
                 return _handler
-
             app.get(_path, include_in_schema=False)(_make_handler())
 
     @app.get("/", include_in_schema=False)
@@ -805,7 +712,6 @@ if _DIST.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
-        # Don't intercept API or utility routes
         skip = ("api/", "health", "ready", "usage", "ask")
         if any(full_path == s or full_path.startswith(s) for s in skip):
             raise HTTPException(status_code=404)

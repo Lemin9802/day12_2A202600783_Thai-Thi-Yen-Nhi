@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from typing import Iterable
 
 from backend.config import PROJECT_ROOT
 from backend.file_checker import clean_text, evaluate_uploaded_text
+from backend.persistence import redis_client
 
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
 ATTACHMENTS_PATH = RUNTIME_DIR / "attachments.json"
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
+_TTL = max(3600, int(os.getenv("MAITHUYLAW_ATTACHMENT_TTL_SECONDS", str(60 * 60 * 24 * 30))))
+_MAX_TEXT = max(2000, int(os.getenv("MAITHUYLAW_ATTACHMENT_TEXT_CHARS", "12000")))
 
 
 def _now() -> str:
@@ -28,9 +33,7 @@ def _load_store() -> dict:
         return _empty_store()
     try:
         data = json.loads(ATTACHMENTS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or "attachments" not in data:
-            return _empty_store()
-        return data
+        return data if isinstance(data, dict) and isinstance(data.get("attachments"), dict) else _empty_store()
     except Exception:
         return _empty_store()
 
@@ -42,6 +45,31 @@ def _save_store(data: dict) -> None:
     tmp.replace(ATTACHMENTS_PATH)
 
 
+def _attachment_key(attachment_id: str) -> str:
+    return f"maithuylaw:attachment:{attachment_id}"
+
+
+def _chat_index(chat_id: str) -> str:
+    return f"maithuylaw:chat:{chat_id}:attachments"
+
+
+def _redis_save(item: dict) -> bool:
+    client = redis_client()
+    if client is None:
+        return False
+    try:
+        payload = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+        pipe = client.pipeline()
+        pipe.setex(_attachment_key(item["id"]), _TTL, payload)
+        if item.get("chat_id"):
+            pipe.zadd(_chat_index(item["chat_id"]), {item["id"]: time.time()})
+            pipe.expire(_chat_index(item["chat_id"]), _TTL)
+        pipe.execute()
+        return True
+    except Exception:
+        return False
+
+
 def save_attachment(
     *,
     user_id: str,
@@ -51,11 +79,10 @@ def save_attachment(
     text: str,
     size_bytes: int | None = None,
     url: str | None = None,
+    evaluation: dict | None = None,
 ) -> dict:
-    evaluation = evaluate_uploaded_text(text)
+    check = evaluation or evaluate_uploaded_text(text, source_url=url)
     attachment_id = str(uuid.uuid4())
-    now = _now()
-
     item = {
         "id": attachment_id,
         "user_id": user_id or "demo-user",
@@ -64,45 +91,92 @@ def save_attachment(
         "kind": kind,
         "url": url,
         "size_bytes": size_bytes,
-        "created_at": now,
-        "text": clean_text(text)[:12000],
-        **evaluation,
+        "created_at": _now(),
+        "text": clean_text(text)[:_MAX_TEXT],
+        **check,
     }
-
-    with _LOCK:
-        data = _load_store()
-        data["attachments"][attachment_id] = item
-        _save_store(data)
-
+    if not _redis_save(item):
+        with _LOCK:
+            data = _load_store()
+            data["attachments"][attachment_id] = item
+            _save_store(data)
     return public_attachment(item, include_text=False)
 
 
+def _raw_attachment(attachment_id: str) -> dict | None:
+    client = redis_client()
+    if client is not None:
+        try:
+            raw = client.get(_attachment_key(attachment_id))
+            value = json.loads(raw) if raw else None
+            return value if isinstance(value, dict) else None
+        except Exception:
+            return None
+    return _load_store().get("attachments", {}).get(attachment_id)
+
+
 def get_attachment(attachment_id: str, user_id: str = "demo-user", include_text: bool = False) -> dict | None:
-    data = _load_store()
-    item = data.get("attachments", {}).get(attachment_id)
-    if not item:
-        return None
-    if item.get("user_id", "demo-user") != (user_id or "demo-user"):
+    item = _raw_attachment(attachment_id)
+    if not item or item.get("user_id") != (user_id or "demo-user"):
         return None
     return public_attachment(item, include_text=include_text)
 
 
 def list_attachments_for_chat(chat_id: str, user_id: str = "demo-user") -> list[dict]:
-    data = _load_store()
-    items = []
-    for item in data.get("attachments", {}).values():
-        if item.get("user_id", "demo-user") == (user_id or "demo-user") and item.get("chat_id") == chat_id:
-            items.append(public_attachment(item, include_text=False))
-    return sorted(items, key=lambda x: x.get("created_at") or "", reverse=True)
+    uid = user_id or "demo-user"
+    client = redis_client()
+    raw_items: list[dict] = []
+    if client is not None:
+        try:
+            ids = client.zrevrange(_chat_index(chat_id), 0, -1)
+            raw_items = [item for attachment_id in ids if (item := _raw_attachment(attachment_id))]
+        except Exception:
+            raw_items = []
+    else:
+        raw_items = list(_load_store().get("attachments", {}).values())
+    return sorted(
+        [public_attachment(item) for item in raw_items if item.get("user_id") == uid and item.get("chat_id") == chat_id],
+        key=lambda item: item.get("created_at") or "",
+        reverse=True,
+    )
 
 
-def resolve_attachments(attachment_ids: list[str], user_id: str = "demo-user") -> list[dict]:
-    resolved = []
-    for attachment_id in attachment_ids or []:
+def resolve_attachments(
+    attachment_ids: list[str],
+    user_id: str = "demo-user",
+    *,
+    allowed_verdicts: Iterable[str] = ("accepted",),
+) -> list[dict]:
+    allowed = set(allowed_verdicts)
+    resolved: list[dict] = []
+    for attachment_id in dict.fromkeys(attachment_ids or []):
         item = get_attachment(attachment_id, user_id=user_id, include_text=True)
-        if item:
+        if item and item.get("verdict") in allowed:
             resolved.append(item)
     return resolved
+
+
+def delete_attachments_for_chat(chat_id: str, user_id: str = "demo-user") -> int:
+    items = list_attachments_for_chat(chat_id, user_id)
+    if not items:
+        return 0
+    client = redis_client()
+    if client is not None:
+        try:
+            pipe = client.pipeline()
+            for item in items:
+                pipe.delete(_attachment_key(item["id"]))
+            pipe.delete(_chat_index(chat_id))
+            pipe.execute()
+            return len(items)
+        except Exception:
+            return 0
+    with _LOCK:
+        data = _load_store()
+        for item in items:
+            data["attachments"].pop(item["id"], None)
+        _save_store(data)
+    return len(items)
 
 
 def public_attachment(item: dict, include_text: bool = False) -> dict:

@@ -14,3 +14,9 @@ venv
 node_modules
 .DS_Store
 *.log
+
+data/runtime
+frontend/dist
+frontend/.vite
+*.sqlite
+*.db

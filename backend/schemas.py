@@ -6,16 +6,32 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1)
-    language: str = "vi"
-    chat_id: str | None = None
-    user_id: str = "demo-user"
-    attachment_ids: list[str] = Field(default_factory=list)
-    links: list[str] = Field(default_factory=list)
+    message: str = Field(..., min_length=1, max_length=4000)
+    language: str = Field("vi", max_length=8)
+    chat_id: str | None = Field(default=None, max_length=128)
+    user_id: str = Field("demo-user", max_length=128)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=10)
+    links: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("attachment_ids")
+    @classmethod
+    def _validate_attachment_ids(cls, values: list[str]) -> list[str]:
+        cleaned = [str(value).strip() for value in values]
+        if any(not value or len(value) > 128 for value in cleaned):
+            raise ValueError("Attachment ID không hợp lệ.")
+        return list(dict.fromkeys(cleaned))
+
+    @field_validator("links")
+    @classmethod
+    def _validate_links(cls, values: list[str]) -> list[str]:
+        cleaned = [str(value).strip() for value in values]
+        if any(len(value) > 2048 for value in cleaned):
+            raise ValueError("URL quá dài.")
+        return list(dict.fromkeys(cleaned))
 
 
 class Source(BaseModel):
@@ -101,7 +117,6 @@ def _repair_text_values(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _repair_text_values(item) for key, item in value.items()}
     return value
-
 
 
 _INTERNAL_OUTPUT_TERMS = (
@@ -311,8 +326,8 @@ def _suggest_followups(answer: str, evidence_level: str | None, refused: bool) -
 
 
 class CreateChatRequest(BaseModel):
-    user_id: str = "demo-user"
-    title: str | None = None
+    user_id: str = Field("demo-user", max_length=128)
+    title: str | None = Field(default=None, max_length=80)
 
 
 class RenameChatRequest(BaseModel):
@@ -339,16 +354,16 @@ class ChatDetail(BaseModel):
 
 
 class LinkAttachmentRequest(BaseModel):
-    url: str = Field(..., min_length=8)
-    user_id: str = "demo-user"
-    chat_id: str | None = None
-    title: str | None = None
+    url: str = Field(..., min_length=8, max_length=2048)
+    user_id: str = Field("demo-user", max_length=128)
+    chat_id: str | None = Field(default=None, max_length=128)
+    title: str | None = Field(default=None, max_length=200)
 
 
 class GenerateTitleRequest(BaseModel):
-    user_id: str
-    message: str
-    language: str = "vi"
+    user_id: str = Field(..., max_length=128)
+    message: str = Field(..., min_length=1, max_length=4000)
+    language: str = Field("vi", max_length=8)
 
 
 class GenerateTitleResponse(BaseModel):
