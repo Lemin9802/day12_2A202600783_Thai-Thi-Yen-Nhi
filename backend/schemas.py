@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 import re
-from functools import lru_cache
-from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
+
+EVIDENCE_LEVELS = {"Căn cứ rõ", "Cần kiểm tra thêm", "Chưa đủ căn cứ", "Ngoài phạm vi hỗ trợ", "Câu hỏi nhạy cảm"}
+INTERNAL_TERMS = ("dataset", "rag", "backend", "metadata", "provider", "fallback", "key context", "build production", "crawler/local", "index production")
 
 
 class ChatRequest(BaseModel):
@@ -19,7 +20,7 @@ class ChatRequest(BaseModel):
 
     @field_validator("attachment_ids")
     @classmethod
-    def _validate_attachment_ids(cls, values: list[str]) -> list[str]:
+    def validate_attachment_ids(cls, values: list[str]) -> list[str]:
         cleaned = [str(value).strip() for value in values]
         if any(not value or len(value) > 128 for value in cleaned):
             raise ValueError("Attachment ID không hợp lệ.")
@@ -27,7 +28,7 @@ class ChatRequest(BaseModel):
 
     @field_validator("links")
     @classmethod
-    def _validate_links(cls, values: list[str]) -> list[str]:
+    def validate_links(cls, values: list[str]) -> list[str]:
         cleaned = [str(value).strip() for value in values]
         if any(len(value) > 2048 for value in cleaned):
             raise ValueError("URL quá dài.")
@@ -48,6 +49,51 @@ class Source(BaseModel):
     score: float | None = None
 
 
+def clean_user_text(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.replace("\r\n", "\n").replace("\x00", " ")
+    for pattern in (
+        r"(?im)^.*(?:key context for rag|build production|crawler/local browser|index production).*$",
+        r"\b(?:source_type|score|metadata)\s*=\s*[\w.:-]+",
+        r"\b(?:dataset|backend|provider|fallback)\b\s*[:=-]*",
+    ):
+        text = re.sub(pattern, "", text, flags=re.I)
+    text = re.sub(r"https?://\S+", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def normalize_sources(sources: list[dict]) -> list[dict]:
+    result = []
+    seen = set()
+    for index, raw in enumerate(sources or [], 1):
+        if not isinstance(raw, dict):
+            continue
+        url = raw.get("canonical_url") or raw.get("url")
+        title = clean_user_text(raw.get("title") or raw.get("doc_id") or f"Nguồn {index}")
+        key = str(raw.get("doc_id") or url or title)
+        if key in seen:
+            continue
+        seen.add(key)
+        source_type = str(raw.get("source_type") or "").lower()
+        label = raw.get("source_type_label") or ("Văn bản pháp luật" if source_type == "legal" else "Tin chính thống" if source_type == "news" else "Chính sách" if source_type == "policy" else "Nguồn đính kèm" if source_type == "attachment" else "Nguồn tham khảo")
+        host = (urlsplit(str(url)).hostname or "").lower() if url else ""
+        item = {
+            "source_id": str(raw.get("source_id") or index),
+            "title": title,
+            "source_type": source_type or None,
+            "source_type_label": label,
+            "publisher": clean_user_text(raw.get("publisher")),
+            "official_domain": raw.get("official_domain") or host or None,
+            "url": url,
+            "canonical_url": url,
+            "doc_id": raw.get("doc_id"),
+            "snippet": clean_user_text(raw.get("snippet"))[:320] if raw.get("snippet") else None,
+        }
+        result.append({k: v for k, v in item.items() if v not in (None, "")})
+    return result
+
+
 class ChatResponse(BaseModel):
     answer: str
     chat_id: str
@@ -60,269 +106,26 @@ class ChatResponse(BaseModel):
     follow_up_suggestions: list[str] = Field(default_factory=list)
 
     def model_post_init(self, __context) -> None:
-        self.answer = _clean_answer_text(_repair_text(self.answer) or "")
-        self.reason = _repair_text(self.reason)
-        self.evidence_level = _repair_text(self.evidence_level)
-        self.sources = _normalize_product_sources(self.sources)
-
-        inferred = _infer_evidence_level(self.sources, self.refused, self.reason, self.answer)
-        if not self.evidence_level or inferred == "Chưa đủ căn cứ":
-            self.evidence_level = inferred
-
-        if self.confidence is None or self.evidence_level == "Chưa đủ căn cứ":
-            self.confidence = _infer_confidence(self.evidence_level, self.sources)
-
+        self.answer = clean_user_text(self.answer) or ""
+        self.reason = clean_user_text(self.reason)
+        self.sources = normalize_sources(self.sources)
+        if self.evidence_level not in EVIDENCE_LEVELS:
+            if self.refused:
+                self.evidence_level = "Ngoài phạm vi hỗ trợ" if self.reason == "out_of_domain" else "Câu hỏi nhạy cảm"
+            elif self.sources:
+                self.evidence_level = "Cần kiểm tra thêm"
+            else:
+                self.evidence_level = "Chưa đủ căn cứ"
+        if self.confidence is None:
+            self.confidence = {"Căn cứ rõ": .82, "Cần kiểm tra thêm": .58, "Chưa đủ căn cứ": .25, "Ngoài phạm vi hỗ trợ": .95, "Câu hỏi nhạy cảm": .95}[self.evidence_level]
+        self.confidence = max(0.0, min(1.0, float(self.confidence)))
         if not self.safety:
-            self.safety = _infer_safety(self.refused, self.reason, self.evidence_level)
-        else:
-            self.safety = _repair_text_values(self.safety)
-
-        if not self.follow_up_suggestions or self.evidence_level == "Chưa đủ căn cứ":
-            self.follow_up_suggestions = _suggest_followups(self.answer, self.evidence_level, self.refused)
-        else:
-            self.follow_up_suggestions = [_repair_text(item) or "" for item in self.follow_up_suggestions]
-
-
-def _looks_mojibake(value: str) -> bool:
-    markers = ("Ã", "Â", "Ä", "Æ", "Ð", "áº", "á»", "â€", "ï¿½")
-    return any(marker in value for marker in markers) or bool(re.search(r"[\u0080-\u009f]", value))
-
-
-def _mojibake_score(value: str) -> int:
-    score = 0
-    for marker in ("Ã", "Â", "Ä", "Æ", "Ð", "áº", "á»", "â€", "ï¿½", "�"):
-        score += value.count(marker) * 4
-    score += len(re.findall(r"[\u0080-\u009f]", value)) * 3
-    return score
-
-
-def _repair_text(value: Any) -> Any:
-    if not isinstance(value, str) or not _looks_mojibake(value):
-        return value
-    candidates = [value]
-    for encoding in ("cp1252", "latin1"):
-        try:
-            candidates.append(value.encode(encoding).decode("utf-8"))
-        except Exception:
-            pass
-    best = min(candidates, key=lambda s: (_mojibake_score(s), -len(s)))
-    return best if _mojibake_score(best) < _mojibake_score(value) else value
-
-
-def _repair_text_values(value: Any) -> Any:
-    if isinstance(value, str):
-        return _repair_text(value)
-    if isinstance(value, list):
-        return [_repair_text_values(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _repair_text_values(item) for key, item in value.items()}
-    return value
-
-
-_INTERNAL_OUTPUT_TERMS = (
-    "dataset", "rag", "backend", "metadata", "score", "provider", "fallback",
-    "key context", "summary",
-)
-
-
-def _strip_internal_output_text(value: str) -> str:
-    text = str(value or "")
-    patterns = (
-        r"\bKey context for RAG\b\s*[-:]*\s*",
-        r"\bKey context\b\s*[-:]*\s*",
-        r"\bSummary\b\s*[-:]*\s*",
-        r"\bRAG\b\s*[-:]*\s*",
-        r"\b(source_type|score|metadata)\s*=\s*[\w.:-]+",
-    )
-    for pattern in patterns:
-        text = re.sub(pattern, "", text, flags=re.I)
-    return re.sub(r"\s+", " ", text).strip() if "\n" not in text else re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def _contains_internal_output_text(value: str | None) -> bool:
-    lowered = str(value or "").lower()
-    return any(term in lowered for term in _INTERNAL_OUTPUT_TERMS)
-
-
-def _clean_answer_text(value: str) -> str:
-    text = (value or "").replace("\r\n", "\n")
-    text = _strip_internal_output_text(text)
-    text = re.sub(r"\s+\*\*Source:\*\*.*", "", text)
-    text = re.sub(r"\s+\*\*Date:\*\*.*", "", text)
-    text = re.sub(r"\s+\*\*URL:\*\*\s*https?://\S+", "", text)
-    text = re.sub(r"\s+\*\*Group:\*\*.*", "", text)
-    text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"\n##\s*Nguồn tham khảo\s*\n.*?(?=\n##\s*Lưu ý|\Z)", "\n", text, flags=re.S)
-    text = re.sub(r"\n##\s*References\s*\n.*?(?=\n##\s*Note|\Z)", "\n", text, flags=re.S | re.I)
-
-    kept: list[str] = []
-    for raw_line in text.split("\n"):
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        if stripped.startswith(("- ", "* ", "• ")):
-            body = stripped[2:].strip()
-            first = body.lstrip("-•*0123456789. )(").strip()[:1]
-            if first and first.islower():
-                continue
-            if len(body) < 35 or body.endswith(("xác đ.", "xác định.", "Group:.")):
-                continue
-        kept.append(line)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
-
-
-def _is_low_quality_snippet(value: str | None) -> bool:
-    if not value or len(str(value).strip()) < 25:
-        return True
-    text = str(value).strip()
-    if _contains_internal_output_text(text):
-        return True
-    if "---" in text or re.search(r"\b[a-z]+-[a-z]+-[a-z]+", text.lower()):
-        return True
-    letters = re.findall(r"[A-Za-zÀ-ỹ]", text)
-    if len(letters) >= 80:
-        accented = re.findall(r"[À-ỹ]", text)
-        lower = text.lower()
-        hits = sum(1 for token in ("quyet", "dinh", "chinh", "phu", "cong", "luat", "khong") if token in lower)
-        if len(accented) / max(len(letters), 1) < 0.02 and hits >= 4:
-            return True
-    return False
-
-
-@lru_cache(maxsize=1)
-def _dataset_snippet_registry() -> dict[str, dict]:
-    dataset_path = Path(__file__).resolve().parents[1] / "data" / "maithuylaw_dataset" / "data" / "index" / "rag_chunks.json"
-    registry: dict[str, dict] = {}
-    try:
-        chunks = json.loads(dataset_path.read_text(encoding="utf-8"))
-    except Exception:
-        return registry
-    if not isinstance(chunks, list):
-        return registry
-    for chunk in chunks:
-        if not isinstance(chunk, dict):
-            continue
-        meta = chunk.get("metadata") or {}
-        if not isinstance(meta, dict):
-            meta = {}
-        item = {
-            "snippet": _compact_snippet(chunk.get("content")),
-            "publisher": meta.get("publisher") or chunk.get("publisher"),
-            "official_domain": meta.get("official_domain") or chunk.get("official_domain"),
-            "source_type": meta.get("source_type") or meta.get("type") or chunk.get("source_type"),
-            "url": meta.get("canonical_url") or meta.get("url") or meta.get("source_url") or chunk.get("url"),
-        }
-        for key in (meta.get("doc_id"), meta.get("source_id"), meta.get("chunk_id"), chunk.get("doc_id")):
-            key = str(key or "").strip()
-            if key and key not in registry:
-                registry[key] = item
-    return registry
-
-
-def _compact_snippet(value: Any, limit: int = 280) -> str | None:
-    if not isinstance(value, str):
-        return None
-    text = " ".join(_clean_answer_text(_repair_text(value) or "").split())
-    if not text or _is_low_quality_snippet(text):
-        return None
-    return text[:limit]
-
-
-def _normalize_product_sources(sources: list[dict]) -> list[dict]:
-    registry = _dataset_snippet_registry()
-    normalized: list[dict] = []
-    for idx, raw in enumerate(sources or [], start=1):
-        if not isinstance(raw, dict):
-            continue
-        doc_id = raw.get("doc_id") or raw.get("source_id")
-        reg = registry.get(str(doc_id or ""), {})
-        source_type = str(raw.get("source_type") or raw.get("type") or reg.get("source_type") or "").strip()
-        url = raw.get("canonical_url") or raw.get("url") or raw.get("source_url") or raw.get("link") or reg.get("url")
-        title = _repair_text(raw.get("title") or raw.get("source_title") or raw.get("doc_id") or f"Nguồn {idx}")
-        snippet = _compact_snippet(raw.get("snippet") or raw.get("preview") or raw.get("excerpt") or raw.get("content") or reg.get("snippet"))
-        if _is_low_quality_snippet(snippet) and isinstance(title, str):
-            snippet = title
-        item = {
-            "source_id": raw.get("source_id") or f"S{idx}",
-            "title": title,
-            "source_type": source_type or None,
-            "source_type_label": _source_type_label(source_type),
-            "publisher": _repair_text(raw.get("publisher") or reg.get("publisher")),
-            "official_domain": raw.get("official_domain") or reg.get("official_domain"),
-            "url": url,
-            "canonical_url": url,
-            "doc_id": doc_id,
-            "snippet": snippet,
-        }
-        normalized.append({k: v for k, v in item.items() if v not in (None, "")})
-    return normalized
-
-
-def _source_type_label(source_type: str) -> str:
-    value = (source_type or "").lower()
-    if "legal" in value:
-        return "Văn bản pháp luật"
-    if "news" in value:
-        return "Tin chính thống"
-    if "policy" in value or "chinh" in value:
-        return "Chính sách"
-    if "attachment" in value:
-        return "Nguồn đính kèm"
-    return "Nguồn tham khảo"
-
-
-def _infer_evidence_level(sources: list[dict], refused: bool, reason: str | None, answer: str) -> str:
-    reason_text = (reason or "").lower()
-    answer_text = (answer or "").lower()
-    if "chưa đủ căn cứ" in answer_text or "chưa có căn cứ pháp lý trực tiếp" in answer_text or "không có căn cứ pháp lý trực tiếp" in answer_text:
-        return "Chưa đủ căn cứ"
-    if refused:
-        if "out_of_domain" in reason_text or "ngoài phạm vi" in answer_text or "chỉ hỗ trợ tra cứu" in answer_text:
-            return "Ngoài phạm vi hỗ trợ"
-        return "Câu hỏi nhạy cảm"
-    if not sources:
-        return "Chưa đủ căn cứ"
-    has_legal = any("legal" in str(s.get("source_type") or "").lower() for s in sources)
-    has_official = any(
-        any(domain in str(s.get("url") or s.get("canonical_url") or s.get("official_domain") or "").lower()
-            for domain in ("vbpl.vn", "chinhphu.vn", "bocongan.gov.vn", "moj.gov.vn", "congbao.chinhphu.vn"))
-        for s in sources
-    )
-    if has_legal and has_official:
-        return "Căn cứ rõ"
-    return "Cần kiểm tra thêm"
-
-
-def _infer_confidence(evidence_level: str | None, sources: list[dict]) -> float:
-    return {
-        "Căn cứ rõ": 0.82,
-        "Cần kiểm tra thêm": 0.58,
-        "Chưa đủ căn cứ": 0.25,
-        "Ngoài phạm vi hỗ trợ": 0.95,
-        "Câu hỏi nhạy cảm": 0.95,
-    }.get(evidence_level or "", 0.4 if sources else 0.2)
-
-
-def _infer_safety(refused: bool, reason: str | None, evidence_level: str | None) -> dict:
-    if evidence_level == "Câu hỏi nhạy cảm":
-        category = "sensitive_or_unsafe"
-    elif evidence_level == "Ngoài phạm vi hỗ trợ":
-        category = "out_of_scope"
-    else:
-        category = "safe"
-    return {"refused": refused, "category": category, "reason": reason}
-
-
-def _suggest_followups(answer: str, evidence_level: str | None, refused: bool) -> list[str]:
-    text = (answer or "").lower()
-    if refused and evidence_level == "Câu hỏi nhạy cảm":
-        return ["Quy định pháp luật liên quan là gì?", "Hậu quả pháp lý có thể phát sinh như thế nào?"]
-    if evidence_level == "Ngoài phạm vi hỗ trợ":
-        return ["Bạn muốn hỏi về quy định pháp luật nào?", "Bạn có nguồn chính thống cần đối chiếu không?"]
-    if evidence_level == "Chưa đủ căn cứ":
-        return ["Bạn có thể nói rõ hành vi, thời điểm hoặc đối tượng liên quan không?", "Bạn có văn bản, số điều hoặc link nguồn chính thống cần đối chiếu không?"]
-    if "cai nghiện" in text or "điều trị" in text:
-        return ["Cai nghiện bắt buộc áp dụng khi nào?", "Gia đình cần chuẩn bị giấy tờ gì?"]
-    return ["Mức xử phạt cụ thể là gì?", "Trường hợp nào có thể bị xử lý hình sự?"]
+            self.safety = {"allowed": not self.refused, "risk_level": "disallowed" if self.refused else "safe", "reason": self.reason}
+        if not self.follow_up_suggestions:
+            if self.evidence_level == "Chưa đủ căn cứ":
+                self.follow_up_suggestions = ["Tìm thêm nguồn chính thống", "Hỏi lại cụ thể hơn", "Gửi văn bản hoặc link để đối chiếu"]
+            elif self.evidence_level == "Câu hỏi nhạy cảm":
+                self.follow_up_suggestions = ["Tìm hiểu quy định pháp luật liên quan", "Xem các bước hỗ trợ an toàn"]
 
 
 class CreateChatRequest(BaseModel):
@@ -331,7 +134,7 @@ class CreateChatRequest(BaseModel):
 
 
 class RenameChatRequest(BaseModel):
-    user_id: str = "demo-user"
+    user_id: str = Field("demo-user", max_length=128)
     title: str = Field(..., min_length=1, max_length=80)
 
 
@@ -350,7 +153,7 @@ class ChatDetail(BaseModel):
     title: str
     created_at: str | None = None
     updated_at: str | None = None
-    messages: list[dict] = []
+    messages: list[dict] = Field(default_factory=list)
 
 
 class LinkAttachmentRequest(BaseModel):

@@ -1,96 +1,62 @@
 from __future__ import annotations
 
 import re
+from backend.intent import has_legal_document_identifier, is_identity_question, normalize_text
 
-
-DOMAIN_KEYWORDS = [
-    # Vietnamese with diacritics
-    "ma túy", "ma tuý", "matuy", "mai thúy", "mai thuy",
-    "chất ma túy", "tiền chất", "cai nghiện", "sau cai",
-    "tàng trữ", "vận chuyển", "mua bán", "sử dụng trái phép",
-    "phòng chống ma túy", "phòng, chống ma túy",
-    "người nghiện", "người sử dụng trái phép chất ma túy",
-    "thuốc lá điện tử", "bóng cười", "n2o",
-    "bộ luật hình sự", "luật phòng chống ma túy",
-    # Vietnamese without diacritics (no-diacritic input support)
-    "ma tuy", "chat ma tuy", "tien chat", "cai nghien", "sau cai",
-    "tang tru", "van chuyen", "mua ban", "su dung trai phep",
-    "phong chong ma tuy", "nguoi nghien",
-    "thuoc la dien tu", "bong cuoi",
-    "bo luat hinh su", "luat phong chong ma tuy",
-]
-
-DANGEROUS_PATTERNS = [
-    # Vietnamese with diacritics
-    r"lách luật",
-    r"né\s+(?:tội|trách nhiệm|công an|kiểm tra|xử lý)",
-    r"trốn\s+(?:tội|truy tố|trách nhiệm|công an)",
-    r"qua mặt",
-    r"che giấu",
-    r"phi tang",
-    r"vận chuyển.*(?:không bị bắt|an toàn|trót lọt)",
-    r"mua.*(?:ở đâu|chỗ nào|như thế nào|không bị phát hiện)",
-    r"cách\s+(?:sản xuất|điều chế|pha chế|trồng|mua bán|vận chuyển|sử dụng|dùng)",
-    r"(?:làm sao|làm thế nào|cách)\s+(?:để\s+)?(?:mua|bán|tàng trữ|giấu|vận chuyển|sử dụng|dùng)\s+ma túy",
-    r"test.*ma túy.*(?:qua|âm tính|né)",
-    r"xét nghiệm.*(?:qua|âm tính|không bị phát hiện|né|tránh)",
-    r"giấu\s+(?:ma túy|tang vật|bằng chứng)",
-    r"tiêu hủy.*(?:bằng chứng|tang vật|ma túy)",
-    r"(?:bán|buôn).*ma túy.*(?:an toàn|không bị|cách|làm sao)",
-    # Vietnamese without diacritics
-    r"lach luat",
-    r"ne\s+(?:toi|trach nhiem|cong an|kiem tra|xu ly)",
-    r"tron\s+(?:toi|truy to|trach nhiem|cong an)",
-    r"qua mat",
-    r"che giau",
-    r"phi tang",
-    r"cach\s+(?:san xuat|dieu che|pha che|trong|mua ban|van chuyen|su dung|dung)",
-    r"cach\s+giau\s+ma\s+tuy",
-    r"cach\s+mua\s+ma\s+tuy",
-    r"cach\s+van\s+chuyen\s+ma\s+tuy",
-    r"cach\s+su\s+dung\s+ma\s+tuy",
-    r"(?:lam sao|lam the nao|cach)\s+(?:de\s+)?(?:mua|ban|tang tru|giau|van chuyen|su dung|dung)\s+ma\s*tuy",
-    r"qua\s+mat\s+xet\s+nghiem",
-    r"cach\s+qua\s+mat\s+xet\s+nghiem",
-    r"lam\s+sao\s+de\s+mua\s+ma\s+tuy",
-    r"lam\s+sao\s+de\s+giau\s+ma\s+tuy",
-    r"giau\s+(?:ma\s*tuy|tang\s*vat|bang\s*chung)",
-    r"tieu\s+huy.*(?:bang\s*chung|tang\s*vat|ma\s*tuy)",
-]
+DOMAIN_TERMS = (
+    "ma tuy", "chat ma tuy", "tien chat", "cai nghien", "sau cai", "tang tru", "van chuyen",
+    "mua ban", "su dung trai phep", "phong chong ma tuy", "nguoi nghien", "bo luat hinh su",
+    "luat phong chong ma tuy", "narcotic", "drug law", "drug policy", "drug prevention", "addiction",
+    "rehabilitation", "methamphetamine", "heroin", "cannabis",
+)
+LEGAL_FRAMING = (
+    "bi xu ly", "bi phat", "xu phat", "phap luat quy dinh", "trach nhiem", "cau thanh toi",
+    "hinh phat", "muc phat", "khac nhau", "hau qua phap ly", "co hop phap", "legal consequence",
+    "what is the penalty", "punishable", "under the law",
+)
+OPERATIONAL_PATTERNS = (
+    r"\b(?:cach|lam sao|lam the nao)\s+(?:de\s+)?(?:mua|ban|giau|van chuyen|san xuat|dieu che|su dung|dung)\b",
+    r"\b(?:ne|tron|qua mat|lach)\s+(?:cong an|canh sat|kiem tra|xet nghiem|phap luat|trach nhiem)\b",
+    r"\b(?:che giau|phi tang|tieu huy)\s+(?:ma tuy|tang vat|bang chung)\b",
+    r"\b(?:van chuyen|buon|ban)\b.{0,40}\b(?:an toan|trot lot|khong bi bat|khong bi phat hien)\b",
+    r"\b(?:how|ways?)\s+(?:can i|to)\s+(?:buy|sell|hide|conceal|transport|smuggle|make|manufacture|use)\b.{0,50}\b(?:drug|drugs|narcotic|evidence)\b",
+    r"\b(?:hide|conceal|destroy)\b.{0,30}\b(?:drug|drugs|evidence|contraband)\b",
+    r"\b(?:evade|avoid|bypass|beat|fool)\b.{0,35}\b(?:police|detection|inspection|drug test|testing|law enforcement)\b",
+    r"\b(?:pass|beat)\b.{0,20}\bdrug test\b",
+)
 
 REFUSAL_MESSAGE = (
     "Mình không thể hỗ trợ theo hướng hướng dẫn thực hiện hoặc che giấu hành vi vi phạm pháp luật. "
-    "Tuy nhiên, mình có thể giúp bạn tìm hiểu quy định liên quan, hậu quả pháp lý, "
-    "hoặc các bước an toàn để liên hệ luật sư/cơ quan có thẩm quyền."
+    "Tuy nhiên, mình có thể giúp bạn tìm hiểu quy định liên quan, hậu quả pháp lý hoặc các bước an toàn để liên hệ luật sư/cơ quan có thẩm quyền."
 )
 
 
 def is_in_domain(text: str) -> bool:
-    q = str(text).lower()
-    if any(k in q for k in DOMAIN_KEYWORDS):
-        return True
-    return _is_in_domain_en(q)
+    q = normalize_text(text)
+    return is_identity_question(text) or has_legal_document_identifier(text) or any(term in q for term in DOMAIN_TERMS)
 
 
-def _is_in_domain_en(lowered: str) -> bool:
-    en_terms = {
-        "drug", "drugs", "drug news", "drug law", "drug policy",
-        "drug prevention", "drug control", "drug-related",
-        "narcotic", "narcotics", "substance abuse",
-        "addiction", "addict", "rehabilitation",
-        "compulsory rehabilitation", "detoxification",
-        "harm reduction", "methamphetamine", "heroin",
-        "cannabis", "vietnam drug", "vietnamese drug",
-    }
-    return any(term in lowered for term in en_terms)
+def is_legal_education_question(text: str) -> bool:
+    q = normalize_text(text)
+    return any(term in q for term in LEGAL_FRAMING)
 
 
 def detect_safety_issue(text: str) -> str | None:
-    q = str(text).lower()
-    for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, q):
-            return (
-                "Câu hỏi có dấu hiệu yêu cầu lách luật, né tránh xử lý, "
-                "che giấu hành vi hoặc hỗ trợ hành vi liên quan đến ma túy."
-            )
+    q = normalize_text(text)
+    if is_legal_education_question(text):
+        return None
+    if any(re.search(pattern, q, re.I) for pattern in OPERATIONAL_PATTERNS):
+        return "Câu hỏi yêu cầu hướng dẫn thực hiện, che giấu hoặc né tránh việc phát hiện hành vi liên quan đến ma túy."
     return None
+
+
+def output_safety_check(answer: str, source_count: int) -> tuple[bool, str | None]:
+    q = normalize_text(answer)
+    if any(re.search(pattern, q, re.I) for pattern in OPERATIONAL_PATTERNS):
+        return False, "Câu trả lời có nội dung hướng dẫn không an toàn."
+    internal = ("dataset", "backend", "metadata", "provider", "fallback", "key context", "build production", "crawler/local")
+    if any(term in q for term in internal):
+        return False, "Câu trả lời chứa thông tin kỹ thuật nội bộ."
+    if source_count == 0 and re.search(r"\b(?:dieu|khoan)\s+\d+|\bphat\s+tu\b|\bphat\s+tien\b", q):
+        return False, "Kết luận pháp lý cụ thể chưa có nguồn hỗ trợ."
+    return True, None
