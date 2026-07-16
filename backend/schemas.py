@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     user_id: str = Field("demo-user", max_length=128)
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     links: list[str] = Field(default_factory=list, max_length=3)
+    controlled_search: bool = False
 
     @field_validator("attachment_ids")
     @classmethod
@@ -109,6 +110,13 @@ class ChatResponse(BaseModel):
         self.answer = clean_user_text(self.answer) or ""
         self.reason = clean_user_text(self.reason)
         self.sources = normalize_sources(self.sources)
+        answer_lower = self.answer.lower()
+        if self.answer.startswith("MaiThuyLaw là tên dự án") or self.answer.startswith("MaiThuyLaw combines"):
+            self.evidence_level = "Căn cứ rõ"
+            self.confidence = 1.0
+        elif "chưa thấy căn cứ" in answer_lower or "chưa đủ căn cứ" in answer_lower or "not yet see direct legal" in answer_lower:
+            self.evidence_level = "Chưa đủ căn cứ"
+            self.confidence = 0.25
         if self.evidence_level not in EVIDENCE_LEVELS:
             if self.refused:
                 self.evidence_level = "Ngoài phạm vi hỗ trợ" if self.reason == "out_of_domain" else "Câu hỏi nhạy cảm"

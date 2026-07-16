@@ -85,8 +85,8 @@ def _sanitize_title(title: str, language: Language) -> str:
 def generate_chat_title(message: str, language: Language = "vi") -> str:
     fallback = fallback_title(message, language)
 
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
+    api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
 
     if not api_key or genai is None:
         return fallback
