@@ -558,3 +558,33 @@ screenshots/09-public-ui-auth-success.png
 Note: this UI is intentionally lightweight. The backend still uses the Day 12 mock agent. The next product step is to replace the mock logic with the real MaiThuyLaw RAG/agent backend.
 
 <!-- MAITHUYLAW_UI_UPDATE_END -->
+
+## MaiThuyLaw AI production application
+
+The production application is located in `backend/` and `frontend/`. The numbered `01-` to `06-` folders are educational lab snapshots and are not used by Railway.
+
+### Required Railway variables
+
+- `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- `GEMINI_MODEL=gemini-3.1-flash-lite`
+- `MAITHUYLAW_SESSION_SECRET` with a long random value
+- `REDIS_URL` for shared chat history and quotas
+- `MAITHUYLAW_ALLOWED_ORIGINS` set to the public application origin
+
+Optional restricted API mode uses `MAITHUYLAW_API_KEY`. Do not put a server secret into the frontend bundle. Controlled web search is disabled by default and requires both user consent and `MAITHUYLAW_REALTIME_ENABLED=true` with `TAVILY_API_KEY`.
+
+### Production validation
+
+```bash
+pip install -r requirements.txt
+python -m compileall -q backend
+python scripts/validate_dataset_manifest.py
+pytest -q
+cd frontend && npm ci && npm run build
+```
+
+Railway and Docker use `/ready` as the readiness health check. `/health` only reports process health. Uploaded links are limited to the configured official-domain allowlist, and rejected or unreviewed attachments are not used as answer context.
+
+### Known limitations
+
+MaiThuyLaw AI provides legal information, not case-specific legal advice. Exact sanctions require direct official legal authority. When the available evidence is indirect, the product returns `Chưa đủ căn cứ` instead of inferring a conclusion.

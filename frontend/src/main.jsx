@@ -193,7 +193,8 @@ function App() {
     try {
       const activeChatId = await ensureChat();
       const acceptedIds = attachments.filter(item => item.id && item.verdict === "accepted").map(item => item.id);
-      const data = await request("/api/chat", { method: "POST", body: JSON.stringify({ message, user_id: userId, chat_id: activeChatId, attachment_ids: acceptedIds, language: "vi" }) }, controller.signal);
+      const controlledSearch = message.toLowerCase() === "tìm thêm nguồn chính thống";
+      const data = await request("/api/chat", { method: "POST", body: JSON.stringify({ message, user_id: userId, chat_id: activeChatId, attachment_ids: acceptedIds, language: "vi", controlled_search: controlledSearch }) }, controller.signal);
       setMessages(current => [...current, normalizeMessage({ role: "assistant", content: data.answer, ...data })]);
       setAttachments([]);
       await loadChats();
