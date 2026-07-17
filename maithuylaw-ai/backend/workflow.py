@@ -7,7 +7,9 @@ output safety review.
 """
 from __future__ import annotations
 
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -28,6 +30,29 @@ SAFE_FALLBACK_EN = (
     "Please ask a more specific question or provide an official document for comparison."
 )
 
+_EXTERNAL_EVIDENCE_TERMS = (
+    "doi chieu voi", "so sanh voi", "kiem chung voi", "xac minh voi",
+    "theo phap luat hien hanh", "theo quy dinh hien hanh", "can cu phap ly",
+    "nguon chinh thong", "tra cuu them", "tim them nguon", "bo sung nguon",
+    "dung voi phap luat", "co dung luat", "khac voi quy dinh", "cap nhat moi nhat",
+)
+
+
+def _normalize_request_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).lower()
+    text = "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _attachment_mode(message: str, attachments: list[dict]) -> str:
+    """Use an attached document as primary context unless the user asks for external comparison."""
+    if not attachments:
+        return "none"
+    normalized = _normalize_request_text(message)
+    if any(term in normalized for term in _EXTERNAL_EVIDENCE_TERMS):
+        return "hybrid"
+    return "attachment_only"
+
 
 @dataclass
 class WorkflowState:
@@ -38,6 +63,7 @@ class WorkflowState:
     language: str = "vi"
     controlled_search: bool = False
     top_k: int = 6
+    attachment_mode: str = "none"
     dataset_results: list[dict] = field(default_factory=list)
     answer: str = ""
     blocked_reason: str | None = None
@@ -69,7 +95,7 @@ class LegalRetrievalAgent:
 
     def run(self, state: WorkflowState) -> WorkflowState:
         started = time.perf_counter()
-        if state.intent.intent == "identity":
+        if state.intent.intent == "identity" or state.attachment_mode == "attachment_only":
             state.dataset_results = []
         else:
             state.dataset_results = retrieve(
@@ -83,6 +109,7 @@ class LegalRetrievalAgent:
             status="ok",
             intent=state.intent.intent,
             required_sources=list(state.intent.required_sources),
+            attachment_mode=state.attachment_mode,
             result_count=len(state.dataset_results),
         )
         return state
@@ -94,7 +121,7 @@ class PolicyNewsResearchAgent:
     def run(self, state: WorkflowState) -> WorkflowState:
         started = time.perf_counter()
         enabled = realtime_enabled()
-        should_search = state.controlled_search and enabled
+        should_search = state.controlled_search and enabled and state.attachment_mode != "attachment_only"
         added = 0
         if should_search:
             for item in search_realtime(state.retrieval_query, language=state.language):
@@ -122,6 +149,7 @@ class PolicyNewsResearchAgent:
             status="ok",
             consented=state.controlled_search,
             enabled=enabled,
+            attachment_mode=state.attachment_mode,
             added=added,
             unavailable=state.realtime_unavailable,
         )
@@ -162,8 +190,22 @@ class AnswerSynthesisAgent:
             state.answer = realtime_unavailable_answer(state.language)
             mode = "realtime_unavailable"
         else:
+            synthesis_message = state.message
+            if state.attachment_mode == "attachment_only":
+                if state.language == "en":
+                    synthesis_message = (
+                        "Read the attached document as the primary context and answer only from its content. "
+                        "If it is insufficient, state the limitation instead of adding outside information.\n\n"
+                        f"User question: {state.message}"
+                    )
+                else:
+                    synthesis_message = (
+                        "Hãy tự đọc tài liệu đính kèm như ngữ cảnh chính và chỉ trả lời bằng nội dung có trong tài liệu. "
+                        "Nếu tài liệu chưa đủ, hãy nói rõ giới hạn thay vì bổ sung thông tin bên ngoài.\n\n"
+                        f"Câu hỏi của người dùng: {state.message}"
+                    )
             generation = generate_answer_with_usage(
-                message=state.message,
+                message=synthesis_message,
                 dataset_results=state.dataset_results,
                 attachments=state.attachments,
                 language=state.language,
@@ -178,7 +220,15 @@ class AnswerSynthesisAgent:
                 "llm_called": generation.llm_called,
             }
             mode = generation.provider
-        state.record(self.name, started, status="ok", mode=mode, answer_chars=len(state.answer), usage=state.generation_usage)
+        state.record(
+            self.name,
+            started,
+            status="ok",
+            mode=mode,
+            attachment_mode=state.attachment_mode,
+            answer_chars=len(state.answer),
+            usage=state.generation_usage,
+        )
         return state
 
 
@@ -193,6 +243,13 @@ class CitationVerificationAgent:
             state.attachments,
             intent=state.intent.intent,
         )
+        if (
+            state.attachment_mode == "attachment_only"
+            and not verification.invalid_citations
+            and not verification.unsupported_claims
+        ):
+            verification.legal_claims_without_legal_source = []
+            verification.valid = True
         state.citation_verification = verification
         if not verification.valid:
             state.blocked_reason = "Citation verification failed"
@@ -204,6 +261,7 @@ class CitationVerificationAgent:
             status="ok",
             valid=verification.valid,
             coverage=verification.coverage,
+            attachment_mode=state.attachment_mode,
             unsupported_claims=len(verification.unsupported_claims),
             invalid_citations=verification.invalid_citations,
         )
@@ -235,6 +293,7 @@ class FinalResponseAgent:
             started,
             status="ok",
             source_count=state.source_count,
+            attachment_mode=state.attachment_mode,
             blocked=bool(state.blocked_reason),
         )
         return state
@@ -278,5 +337,6 @@ def run_legal_workflow(
         language=language,
         controlled_search=controlled_search,
         top_k=top_k,
+        attachment_mode=_attachment_mode(message, attachments),
     )
     return LegalAnswerWorkflow().run(state)
