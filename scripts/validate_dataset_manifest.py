@@ -24,6 +24,7 @@ from pathlib import Path
 ROOT          = Path(__file__).resolve().parents[1]
 CHUNKS_PATH   = ROOT / "data" / "maithuylaw_dataset" / "data" / "index" / "rag_chunks.json"
 MANIFEST_PATH = ROOT / "data" / "maithuylaw_dataset" / "data" / "index" / "dataset_manifest.json"
+POLICY_OVERRIDES_PATH = ROOT / "data" / "maithuylaw_dataset" / "data" / "index" / "policy_overrides.json"
 
 SCOPE_NOTE = (
     "Strict 2025-2026 dataset for MaiThuyLaw AI. "
@@ -44,7 +45,22 @@ def load_chunks() -> list[dict]:
     if not CHUNKS_PATH.exists():
         print(f"ERROR: chunks file not found: {CHUNKS_PATH}", file=sys.stderr)
         sys.exit(1)
-    return json.loads(CHUNKS_PATH.read_text(encoding="utf-8"))
+    chunks = json.loads(CHUNKS_PATH.read_text(encoding="utf-8"))
+    overrides = {}
+    if POLICY_OVERRIDES_PATH.exists():
+        value = json.loads(POLICY_OVERRIDES_PATH.read_text(encoding="utf-8"))
+        overrides = value if isinstance(value, dict) else {}
+    for chunk in chunks:
+        meta = dict(chunk.get("metadata", {}) or {})
+        original_doc_id = str(meta.get("doc_id") or "")
+        override = overrides.get(original_doc_id)
+        if override:
+            meta.update(override)
+            old_chunk_id = str(meta.get("chunk_id") or "")
+            meta["chunk_id"] = old_chunk_id.replace("news-", "policy-", 1)
+            chunk = chunk.copy()
+            chunk["metadata"] = meta
+        yield chunk
 
 
 def build_index(chunks: list[dict]) -> dict[str, dict]:
@@ -95,7 +111,7 @@ def build_manifest_dict(docs: dict[str, dict]) -> dict:
 
 
 def validate(fix: bool = False) -> int:
-    chunks = load_chunks()
+    chunks = list(load_chunks())
     actual = build_index(chunks)
     expected = build_manifest_dict(actual)
     errors: list[str] = []

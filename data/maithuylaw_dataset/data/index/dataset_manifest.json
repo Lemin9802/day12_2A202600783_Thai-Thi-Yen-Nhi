@@ -6,7 +6,8 @@
   "documents": 27,
   "source_type_counts": {
     "legal": 182,
-    "news": 42
+    "news": 28,
+    "policy": 14
   },
   "docs": [
     {
@@ -64,26 +65,8 @@
       "chunks": 2
     },
     {
-      "doc_id": "news-chinh-sach-vay-von-doi-voi-nguoi-sau-cai-nghien-ma-tuy",
-      "title": "Chính sách vay vốn đối với người sau cai nghiện ma túy",
-      "source_type": "news",
-      "chunks": 2
-    },
-    {
-      "doc_id": "news-chung-mot-quyet-tam-hiem-hoa-ma-tuy-nhat-dinh-se-bi-loai-tru",
-      "title": "Chung một quyết tâm, hiểm họa ma túy nhất định sẽ bị loại trừ",
-      "source_type": "news",
-      "chunks": 2
-    },
-    {
       "doc_id": "news-cong-bo-thu-khen-cua-thu-tuong-chinh-phu-va-trao-thuong-thanh-tich-xuat-sac-trong-dau-tran",
       "title": "Công bố Thư khen của Thủ tướng Chính phủ và trao thưởng thành tích xuất sắc trong đấu tranh chuyên án ma túy xuyên quốc gia",
-      "source_type": "news",
-      "chunks": 2
-    },
-    {
-      "doc_id": "news-cong-tac-phong-chong-ma-tuy-tai-dia-phuong-duoc-thuc-hien-nghiem-tuc-khong-bi-ngat-quang",
-      "title": "Công tác phòng chống ma túy tại địa phương được thực hiện nghiêm túc, không bị ngắt quãng",
       "source_type": "news",
       "chunks": 2
     },
@@ -92,12 +75,6 @@
       "title": "Đấu tranh, triệt phá đường dây ma túy vùng nông thôn",
       "source_type": "news",
       "chunks": 1
-    },
-    {
-      "doc_id": "news-gioi-thieu-cac-noi-dung-co-ban-cua-luat-phong-chong-ma-tuy-so-120-2025-qh15",
-      "title": "Giới thiệu các nội dung cơ bản của Luật Phòng, chống ma túy số 120/2025/QH15",
-      "source_type": "news",
-      "chunks": 2
     },
     {
       "doc_id": "news-ha-noi-chung-mot-quyet-tam-vi-cong-dong-khong-ma-tuy",
@@ -124,20 +101,8 @@
       "chunks": 2
     },
     {
-      "doc_id": "news-kiem-soat-cac-hoat-dong-hop-phap-lien-quan-den-ma-tuy",
-      "title": "Kiểm soát các hoạt động hợp pháp liên quan đến ma túy",
-      "source_type": "news",
-      "chunks": 2
-    },
-    {
       "doc_id": "news-nang-cao-suc-khang-cua-toan-xa-hoi-doi-voi-hiem-hoa-ma-tuy",
       "title": "Nâng cao sức kháng của toàn xã hội đối với hiểm họa ma túy",
-      "source_type": "news",
-      "chunks": 2
-    },
-    {
-      "doc_id": "news-ngan-cung-giam-cau-giam-tac-hai-cua-ma-tuy",
-      "title": "Ngăn cung, giảm cầu, giảm tác hại của ma túy",
       "source_type": "news",
       "chunks": 2
     },
@@ -146,12 +111,6 @@
       "title": "Phối hợp đấu tranh phòng, chống ma túy xuyên biên giới",
       "source_type": "news",
       "chunks": 1
-    },
-    {
-      "doc_id": "news-phong-chong-ma-tuy-la-nhiem-vu-cua-ca-he-thong-chinh-tri-va-toan-xa-hoi-khong-duoc-khoan-t",
-      "title": "Phòng chống ma túy là nhiệm vụ của cả hệ thống chính trị và toàn xã hội, không được khoán trắng cho lực lượng Công an",
-      "source_type": "news",
-      "chunks": 2
     },
     {
       "doc_id": "news-triet-pha-5-duong-day-ma-tuy-hon-170-doi-tuong-sa-luoi",
@@ -169,6 +128,48 @@
       "doc_id": "news-xet-xu-53-bi-cao-lien-quan-su-dung-ma-tuy-tai-quan-karaoke-crown-o-can-tho",
       "title": "Xét xử 53 bị cáo liên quan sử dụng ma túy tại quán karaoke Crown ở Cần Thơ",
       "source_type": "news",
+      "chunks": 2
+    },
+    {
+      "doc_id": "policy-chinh-sach-vay-von-doi-voi-nguoi-sau-cai-nghien-ma-tuy",
+      "title": "Chính sách vay vốn đối với người sau cai nghiện ma túy",
+      "source_type": "policy",
+      "chunks": 2
+    },
+    {
+      "doc_id": "policy-chung-mot-quyet-tam-hiem-hoa-ma-tuy-nhat-dinh-se-bi-loai-tru",
+      "title": "Chung một quyết tâm, hiểm họa ma túy nhất định sẽ bị loại trừ",
+      "source_type": "policy",
+      "chunks": 2
+    },
+    {
+      "doc_id": "policy-cong-tac-phong-chong-ma-tuy-tai-dia-phuong-duoc-thuc-hien-nghiem-tuc-khong-bi-ngat-quang",
+      "title": "Công tác phòng chống ma túy tại địa phương được thực hiện nghiêm túc, không bị ngắt quãng",
+      "source_type": "policy",
+      "chunks": 2
+    },
+    {
+      "doc_id": "policy-gioi-thieu-cac-noi-dung-co-ban-cua-luat-phong-chong-ma-tuy-so-120-2025-qh15",
+      "title": "Giới thiệu các nội dung cơ bản của Luật Phòng, chống ma túy số 120/2025/QH15",
+      "source_type": "policy",
+      "chunks": 2
+    },
+    {
+      "doc_id": "policy-kiem-soat-cac-hoat-dong-hop-phap-lien-quan-den-ma-tuy",
+      "title": "Kiểm soát các hoạt động hợp pháp liên quan đến ma túy",
+      "source_type": "policy",
+      "chunks": 2
+    },
+    {
+      "doc_id": "policy-ngan-cung-giam-cau-giam-tac-hai-cua-ma-tuy",
+      "title": "Ngăn cung, giảm cầu, giảm tác hại của ma túy",
+      "source_type": "policy",
+      "chunks": 2
+    },
+    {
+      "doc_id": "policy-phong-chong-ma-tuy-la-nhiem-vu-cua-ca-he-thong-chinh-tri-va-toan-xa-hoi-khong-duoc-khoan-t",
+      "title": "Phòng chống ma túy là nhiệm vụ của cả hệ thống chính trị và toàn xã hội, không được khoán trắng cho lực lượng Công an",
+      "source_type": "policy",
       "chunks": 2
     }
   ]

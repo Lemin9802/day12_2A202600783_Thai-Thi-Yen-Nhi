@@ -24,6 +24,7 @@ COPY --from=py-builder /root/.local /home/appuser/.local
 COPY backend ./backend
 COPY utils ./utils
 COPY data ./data
+COPY scripts ./scripts
 COPY requirements.txt .
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
@@ -36,6 +37,8 @@ ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV APP_NAME="MaiThuyLaw AI"
 ENV APP_VERSION="1.0.0"
+
+RUN python scripts/build_dense_index.py
 
 EXPOSE 8000
 

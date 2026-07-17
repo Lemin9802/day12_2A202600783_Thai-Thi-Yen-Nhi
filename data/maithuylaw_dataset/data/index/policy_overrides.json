@@ -1,0 +1,44 @@
+{
+  "news-chinh-sach-vay-von-doi-voi-nguoi-sau-cai-nghien-ma-tuy": {
+    "doc_id": "policy-chinh-sach-vay-von-doi-voi-nguoi-sau-cai-nghien-ma-tuy",
+    "source_type": "policy",
+    "type": "policy",
+    "policy_kind": "official_policy_management"
+  },
+  "news-chung-mot-quyet-tam-hiem-hoa-ma-tuy-nhat-dinh-se-bi-loai-tru": {
+    "doc_id": "policy-chung-mot-quyet-tam-hiem-hoa-ma-tuy-nhat-dinh-se-bi-loai-tru",
+    "source_type": "policy",
+    "type": "policy",
+    "policy_kind": "official_policy_management"
+  },
+  "news-cong-tac-phong-chong-ma-tuy-tai-dia-phuong-duoc-thuc-hien-nghiem-tuc-khong-bi-ngat-quang": {
+    "doc_id": "policy-cong-tac-phong-chong-ma-tuy-tai-dia-phuong-duoc-thuc-hien-nghiem-tuc-khong-bi-ngat-quang",
+    "source_type": "policy",
+    "type": "policy",
+    "policy_kind": "official_policy_management"
+  },
+  "news-gioi-thieu-cac-noi-dung-co-ban-cua-luat-phong-chong-ma-tuy-so-120-2025-qh15": {
+    "doc_id": "policy-gioi-thieu-cac-noi-dung-co-ban-cua-luat-phong-chong-ma-tuy-so-120-2025-qh15",
+    "source_type": "policy",
+    "type": "policy",
+    "policy_kind": "official_policy_management"
+  },
+  "news-kiem-soat-cac-hoat-dong-hop-phap-lien-quan-den-ma-tuy": {
+    "doc_id": "policy-kiem-soat-cac-hoat-dong-hop-phap-lien-quan-den-ma-tuy",
+    "source_type": "policy",
+    "type": "policy",
+    "policy_kind": "official_policy_management"
+  },
+  "news-ngan-cung-giam-cau-giam-tac-hai-cua-ma-tuy": {
+    "doc_id": "policy-ngan-cung-giam-cau-giam-tac-hai-cua-ma-tuy",
+    "source_type": "policy",
+    "type": "policy",
+    "policy_kind": "official_policy_management"
+  },
+  "news-phong-chong-ma-tuy-la-nhiem-vu-cua-ca-he-thong-chinh-tri-va-toan-xa-hoi-khong-duoc-khoan-t": {
+    "doc_id": "policy-phong-chong-ma-tuy-la-nhiem-vu-cua-ca-he-thong-chinh-tri-va-toan-xa-hoi-khong-duoc-khoan-t",
+    "source_type": "policy",
+    "type": "policy",
+    "policy_kind": "official_policy_management"
+  }
+}
