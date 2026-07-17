@@ -208,6 +208,52 @@ def _rank_positions(scores: dict[int, float]) -> dict[int, int]:
     return {index: rank for rank, (index, score) in enumerate(ranked, 1) if float(score) > 0}
 
 
+def retrieve_bm25(query: str, top_k: int = 6, source_types: tuple[str, ...] | None = None) -> list[dict]:
+    """Sparse BM25 baseline retained for regression evaluation."""
+    chunks = load_chunks()
+    expanded = _expanded_query(query)
+    raw_scores = _bm25().get_scores(_tokens(expanded))
+    intent = _query_intent(query)
+    sanction_query = _is_sanction_query(query)
+    query_terms = [token for token in _tokens(expanded) if len(token) >= 4]
+    allowed_sources = {value.lower() for value in source_types or ()}
+    scored: list[tuple[int, float]] = []
+    for index, item in enumerate(chunks):
+        meta = item.get("metadata", {}) or {}
+        source_type = str(meta.get("source_type") or meta.get("type") or "unknown").lower()
+        if allowed_sources and source_type not in allowed_sources:
+            continue
+        title_blob = _metadata_blob(meta)
+        blob = title_blob + " " + str(item.get("content", "")).lower()[:1200]
+        score = max(float(raw_scores[index]), 0.0) * _source_boost(intent, source_type, sanction_query)
+        score += sum(1 for token in query_terms if token in title_blob) * 0.18
+        if intent == "legal" or sanction_query:
+            score += sum(1 for term in LEGAL_SIGNAL_TERMS if term in blob) * (0.28 if sanction_query else 0.18)
+        if sanction_query and source_type == "news":
+            score -= sum(1 for term in NEWS_INCIDENT_TERMS if term in blob) * 0.35
+        if score > 0:
+            scored.append((index, score))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    max_score = max((score for _, score in scored), default=0.0)
+    results: list[dict] = []
+    seen_docs: set[str] = set()
+    for index, score in scored:
+        relative = score / max_score if max_score else 0.0
+        if relative < MIN_SCORE:
+            continue
+        item = dict(chunks[index])
+        meta = item.get("metadata", {}) or {}
+        doc_key = str(meta.get("doc_id") or meta.get("source_id") or item.get("chunk_id"))
+        if doc_key in seen_docs:
+            continue
+        seen_docs.add(doc_key)
+        item.update(score=round(relative, 4), sparse_score=round(score, 4), retrieval_mode="bm25")
+        results.append(item)
+        if len(results) >= max(top_k, 1):
+            break
+    return results
+
+
 def retrieve(query: str, top_k: int = 6, source_types: tuple[str, ...] | None = None) -> list[dict]:
     """Hybrid BM25+dense retrieval with reciprocal-rank fusion and source controls."""
     chunks = load_chunks()

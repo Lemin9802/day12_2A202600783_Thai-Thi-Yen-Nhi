@@ -112,8 +112,8 @@ def _supported_by(claim: str, source: dict) -> bool:
     source_tokens = _tokens(_source_blob(source))
     overlap = len(claim_tokens & source_tokens) / max(len(claim_tokens), 1)
     claim_without_citations = CITATION_RE.sub("", claim)
-    numbers = set(re.findall(r"\d+[\d.,]*", claim_without_citations))
-    source_numbers = set(re.findall(r"\d+[\d.,]*", _source_blob(source)))
+    numbers = {value.rstrip(".,") for value in re.findall(r"\d+[\d.,]*", claim_without_citations)}
+    source_numbers = {value.rstrip(".,") for value in re.findall(r"\d+[\d.,]*", _source_blob(source))}
     numbers_supported = not numbers or numbers.issubset(source_numbers)
     return overlap >= 0.10 and numbers_supported
 

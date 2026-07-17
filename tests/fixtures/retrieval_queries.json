@@ -1,0 +1,27 @@
+[
+  {
+    "query": "Nghị định 28/2026/NĐ-CP quy định danh mục chất ma túy và tiền chất",
+    "expected_doc_id": "legal-nghi-dinh-28-2026-nd-cp-danh-muc-chat-ma-tuy-va-tien-chat",
+    "source_types": ["legal"]
+  },
+  {
+    "query": "chính sách vay vốn hỗ trợ người sau cai nghiện ma túy",
+    "expected_doc_id": "policy-chinh-sach-vay-von-doi-voi-nguoi-sau-cai-nghien-ma-tuy",
+    "source_types": ["policy", "legal"]
+  },
+  {
+    "query": "khởi tố 13 bị can chuyên án 825P thu giữ 777kg ma túy",
+    "expected_doc_id": "news-khoi-to-13-bi-can-trong-chuyen-an-825p-thu-giu-777kg-ma-tuy-tong-hop",
+    "source_types": ["news"]
+  },
+  {
+    "query": "ngăn cung giảm cầu giảm tác hại của ma túy",
+    "expected_doc_id": "policy-ngan-cung-giam-cau-giam-tac-hai-cua-ma-tuy",
+    "source_types": ["policy"]
+  },
+  {
+    "query": "Thông tư 34/2025 hoạt động hợp pháp liên quan ma túy quốc phòng an ninh",
+    "expected_doc_id": "legal-thong-tu-34-2025-tt-bca-hoat-dong-hop-phap-lien-quan-den-ma-tuy-vi-muc-dich-quoc-phong-an-",
+    "source_types": ["legal"]
+  }
+]
