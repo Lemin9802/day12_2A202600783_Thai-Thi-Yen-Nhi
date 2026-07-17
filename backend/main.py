@@ -1,6 +1,5 @@
 from __future__ import annotations
 from pathlib import Path
-from urllib.parse import urlsplit
 import re
 import json
 import logging
@@ -15,7 +14,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from backend.agent import generate_answer
 from backend.attachments import (
     delete_attachments_for_chat,
     get_attachment,
@@ -26,7 +24,7 @@ from backend.attachments import (
 from backend.config import APP_NAME, DATASET_PATH, MIN_SCORE, TOP_K
 from backend.dataset import dataset_summary, retrieve
 from backend.file_checker import evaluate_uploaded_text, extract_upload_text, fetch_link_text
-from backend.guards import detect_safety_issue, is_in_domain, output_safety_check
+from backend.guards import detect_safety_issue, is_in_domain
 from backend.intent import route_intent
 from backend.security import (
     apply_session_cookie,
@@ -35,7 +33,6 @@ from backend.security import (
     session_secret_configured,
     verify_api_key as _verify_api_key_only,
 )
-from backend.realtime import realtime_enabled, realtime_unavailable_answer, search_realtime, wants_realtime
 from backend.schemas import (
     ChatDetail,
     ChatRequest,
@@ -49,6 +46,7 @@ from backend.schemas import (
     Source,
 )
 from backend.title import generate_chat_title
+from backend.workflow import run_legal_workflow
 from backend.persistence import storage_status
 from backend.store import (
     add_message,
@@ -642,39 +640,23 @@ async def chat(
     retrieval_query = rewrite_with_memory(intent.query_rewrite, chat_id, uid)
     if attachment_text:
         retrieval_query += "\n\nNội dung nguồn đã xác minh:\n" + attachment_text[:2500]
-    dataset_results = [] if intent.intent == "identity" else retrieve(
-        retrieval_query,
-        top_k=TOP_K,
-        source_types=intent.required_sources or None,
-    )
     consented_search = req.controlled_search or message.lower().strip() == "tìm thêm nguồn chính thống"
-    if consented_search and realtime_enabled():
-        for item in search_realtime(retrieval_query, language=_request_language(req)):
-            dataset_results.append({
-                "content": item.get("content", ""),
-                "score": 1.0,
-                "metadata": {
-                    "title": item.get("title"),
-                    "url": item.get("url"),
-                    "canonical_url": item.get("url"),
-                    "source_type": "news",
-                    "official_domain": (urlsplit(item.get("url") or "").hostname or ""),
-                    "publisher": (urlsplit(item.get("url") or "").hostname or ""),
-                },
-            })
-    dataset_sources = [_source_label(item, index) for index, item in enumerate(dataset_results, start=1)]
-    attachment_sources = [_attachment_source(item, index) for index, item in enumerate(attachments, start=1)]
     language = _request_language(req)
-    answer = generate_answer(message=message, dataset_results=dataset_results, attachments=attachments, language=language)
-    if not attachments and wants_realtime(message) and not realtime_enabled():
-        answer = realtime_unavailable_answer(language)
-
+    workflow = run_legal_workflow(
+        message=message,
+        retrieval_query=retrieval_query,
+        intent=intent,
+        attachments=attachments,
+        language=language,
+        controlled_search=consented_search,
+        top_k=TOP_K,
+    )
+    dataset_sources = [_source_label(item, index) for index, item in enumerate(workflow.dataset_results, start=1)]
+    attachment_sources = [_attachment_source(item, index) for index, item in enumerate(attachments, start=1)]
     normalized = _normalize_response_sources(attachment_sources + dataset_sources)
-    safe_answer = _reduce_citation_spam(_normalize_citations(answer, normalized), normalized)
-    output_ok, output_reason = output_safety_check(safe_answer, len(normalized))
-    if not output_ok:
-        logger.warning(json.dumps({"event": "output_safety_block", "reason": output_reason, "chat_id": chat_id}, ensure_ascii=False))
-        safe_answer = "Mình chưa thấy căn cứ đủ trực tiếp trong nguồn hiện có để trả lời chắc chắn. Bạn có thể hỏi cụ thể hơn hoặc gửi văn bản chính thống để mình đối chiếu."
+    safe_answer = _reduce_citation_spam(_normalize_citations(workflow.answer, normalized), normalized)
+    if workflow.blocked_reason:
+        logger.warning(json.dumps({"event": "output_safety_block", "reason": workflow.blocked_reason, "chat_id": chat_id}, ensure_ascii=False))
         normalized = []
     response = ChatResponse(chat_id=chat_id, answer=safe_answer, sources=normalized)
     add_message(chat_id, "user", message, uid, attachments=[item.get("id") for item in attachments])
@@ -692,7 +674,7 @@ async def chat(
         follow_up_suggestions=response.follow_up_suggestions,
     )
     record_budget_usage(uid)
-    logger.info(json.dumps({"event": "chat", "user_id": uid, "chat_id": chat_id, "intent": intent.intent, "required_sources": intent.required_sources, "search_recommended": intent.needs_controlled_search, "sources_count": len(normalized)}, ensure_ascii=False))
+    logger.info(json.dumps({"event": "chat", "user_id": uid, "chat_id": chat_id, "intent": intent.intent, "required_sources": intent.required_sources, "search_recommended": intent.needs_controlled_search, "agent_trace": workflow.trace, "sources_count": len(normalized)}, ensure_ascii=False))
     return response
 
 
