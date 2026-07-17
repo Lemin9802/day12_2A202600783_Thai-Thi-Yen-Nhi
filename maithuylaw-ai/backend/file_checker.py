@@ -290,8 +290,8 @@ def evaluate_uploaded_text(text: str, *, source_url: str | None = None) -> dict:
         verdict = "accepted"
         reason = "Nguồn thuộc tên miền chính thống được phép và nội dung phù hợp phạm vi MaiThuyLaw."
     elif domain_score >= 0.3:
-        verdict = "needs_review"
-        reason = "Nội dung có liên quan nhưng chưa xác minh được nguồn chính thống; chưa được dùng làm căn cứ trả lời."
+        verdict = "accepted"
+        reason = "Nội dung phù hợp phạm vi và được phép dùng để phân tích hoặc đối chiếu; đây là nguồn người dùng cung cấp, chưa được xác minh là nguồn chính thống."
     else:
         verdict = "rejected"
         reason = "Nội dung chưa đủ phù hợp để dùng làm nguồn trả lời."
