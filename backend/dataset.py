@@ -96,7 +96,7 @@ def _metadata_blob(meta: dict) -> str:
     return " ".join(str(meta.get(k, "")) for k in ["title", "source", "doc_id", "path", "news_group"]).lower()
 
 
-def retrieve(query: str, top_k: int = 6) -> list[dict]:
+def retrieve(query: str, top_k: int = 6, source_types: tuple[str, ...] | None = None) -> list[dict]:
     chunks = load_chunks()
     raw_scores = _bm25().get_scores(_tokens(_expanded_query(query)))
     intent = _query_intent(query)
@@ -104,10 +104,13 @@ def retrieve(query: str, top_k: int = 6) -> list[dict]:
     search_query = _expanded_query(query)
     query_terms = [t for t in _tokens(search_query) if len(t) >= 4]
     scored = []
+    allowed_sources = {value.lower() for value in source_types or ()}
     for idx, raw_score in enumerate(raw_scores):
         item = chunks[idx]
         meta = item.get("metadata", {}) or {}
         source_type = meta.get("source_type") or meta.get("type") or "unknown"
+        if allowed_sources and str(source_type).lower() not in allowed_sources:
+            continue
         title_blob = _metadata_blob(meta)
         blob = title_blob + " " + str(item.get("content", "")).lower()[:1200]
         adjusted_score = float(raw_score) * _source_boost(intent, source_type, sanction_query)

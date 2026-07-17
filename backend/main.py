@@ -27,6 +27,7 @@ from backend.config import APP_NAME, DATASET_PATH, MIN_SCORE, TOP_K
 from backend.dataset import dataset_summary, retrieve
 from backend.file_checker import evaluate_uploaded_text, extract_upload_text, fetch_link_text
 from backend.guards import detect_safety_issue, is_in_domain, output_safety_check
+from backend.intent import route_intent
 from backend.security import (
     apply_session_cookie,
     auth_and_quota,
@@ -637,10 +638,15 @@ async def chat(
         add_message(chat_id, "assistant", response.answer, uid, refused=True, reason=response.reason, evidence_level=response.evidence_level, confidence=response.confidence, safety=response.safety, follow_up_suggestions=response.follow_up_suggestions)
         return response
 
-    retrieval_query = rewrite_with_memory(message, chat_id, uid)
+    intent = route_intent(message)
+    retrieval_query = rewrite_with_memory(intent.query_rewrite, chat_id, uid)
     if attachment_text:
         retrieval_query += "\n\nNội dung nguồn đã xác minh:\n" + attachment_text[:2500]
-    dataset_results = retrieve(retrieval_query, top_k=TOP_K)
+    dataset_results = [] if intent.intent == "identity" else retrieve(
+        retrieval_query,
+        top_k=TOP_K,
+        source_types=intent.required_sources or None,
+    )
     consented_search = req.controlled_search or message.lower().strip() == "tìm thêm nguồn chính thống"
     if consented_search and realtime_enabled():
         for item in search_realtime(retrieval_query, language=_request_language(req)):
@@ -686,7 +692,7 @@ async def chat(
         follow_up_suggestions=response.follow_up_suggestions,
     )
     record_budget_usage(uid)
-    logger.info(json.dumps({"event": "chat", "user_id": uid, "chat_id": chat_id, "sources_count": len(normalized)}, ensure_ascii=False))
+    logger.info(json.dumps({"event": "chat", "user_id": uid, "chat_id": chat_id, "intent": intent.intent, "required_sources": intent.required_sources, "search_recommended": intent.needs_controlled_search, "sources_count": len(normalized)}, ensure_ascii=False))
     return response
 
 
