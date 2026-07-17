@@ -11,7 +11,13 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      ENVIRONMENT: development
+      LLM_PROVIDER: none
+      MAITHUYLAW_SESSION_SECRET: ci-session-secret
+      MAITHUYLAW_RATE_LIMIT_PER_MINUTE: "1000"
+      MAITHUYLAW_DAILY_LIMIT: "5000"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,15 +25,10 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: python -m compileall -q backend
+      - run: python -m compileall -q backend scripts tests
       - run: python scripts/validate_dataset_manifest.py
+      - run: python scripts/evaluate_retrieval.py
       - run: pytest -q
-        env:
-          ENVIRONMENT: development
-          LLM_PROVIDER: none
-          MAITHUYLAW_SESSION_SECRET: ci-session-secret
-          MAITHUYLAW_RATE_LIMIT_PER_MINUTE: "1000"
-          MAITHUYLAW_DAILY_LIMIT: "5000"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -37,5 +38,28 @@ jobs:
         run: npm ci
       - working-directory: frontend
         run: npm run build
+      - working-directory: frontend
+        run: npm audit --audit-level=moderate
       - name: Build production image
         run: docker build -t maithuylaw-ci .
+      - name: Run production image
+        run: |
+          docker run -d --name maithuylaw-ci-app -p 8000:8000 \
+            -e ENVIRONMENT=development \
+            -e LLM_PROVIDER=none \
+            -e MAITHUYLAW_SESSION_SECRET=ci-session-secret \
+            -e MAITHUYLAW_API_KEY=ci-smoke-key \
+            -e MAITHUYLAW_RATE_LIMIT_PER_MINUTE=1000 \
+            -e MAITHUYLAW_DAILY_LIMIT=5000 \
+            maithuylaw-ci
+      - name: Smoke test production image
+        env:
+          MAITHUYLAW_BASE_URL: http://127.0.0.1:8000
+          MAITHUYLAW_API_KEY: ci-smoke-key
+        run: python scripts/smoke_test_backend.py
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs maithuylaw-ci-app || true
+      - name: Stop production image
+        if: always()
+        run: docker rm -f maithuylaw-ci-app || true

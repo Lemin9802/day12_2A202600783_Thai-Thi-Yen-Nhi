@@ -1,3 +1,5 @@
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+
 # ── Stage 1: Build React frontend ─────────────────────────────────────────────
 FROM node:20-slim AS frontend-builder
 WORKDIR /frontend
@@ -9,7 +11,6 @@ ENV VITE_API_BASE=""
 RUN npm run build
 
 # ── Stage 2: Install Python deps ─────────────────────────────────────────────
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 FROM ${PYTHON_IMAGE} AS py-builder
 WORKDIR /app
 COPY requirements.txt .
@@ -46,4 +47,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request, os; urllib.request.urlopen('http://localhost:' + os.getenv('PORT','8000') + '/ready')" || exit 1
 
 CMD ["sh", "-c", "python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
-
