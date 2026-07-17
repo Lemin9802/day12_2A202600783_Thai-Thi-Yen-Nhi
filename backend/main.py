@@ -46,6 +46,7 @@ from backend.schemas import (
     Source,
 )
 from backend.title import generate_chat_title
+from backend.usage import ensure_budget_available, get_usage, record_generation_usage
 from backend.workflow import run_legal_workflow
 from backend.persistence import storage_status
 from backend.store import (
@@ -68,69 +69,6 @@ logger = logging.getLogger(__name__)
 START_TIME = time.time()
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
-
-from dataclasses import dataclass, field as dc_field
-
-PRICE_PER_REQUEST_USD = 0.001
-_budget_records: dict[str, object] = {}
-
-
-@dataclass
-class _BudgetRecord:
-    user_id: str
-    month: str = dc_field(default_factory=lambda: time.strftime("%Y-%m"))
-    request_count: int = 0
-    spent_usd: float = 0.0
-
-
-def _monthly_budget() -> float:
-    return float(os.getenv("MONTHLY_BUDGET_USD", "10.0"))
-
-
-def _get_budget_record(user_id: str) -> _BudgetRecord:
-    month = time.strftime("%Y-%m")
-    rec = _budget_records.get(user_id)
-    if not rec or rec.month != month:  # type: ignore[union-attr]
-        rec = _BudgetRecord(user_id=user_id, month=month)
-        _budget_records[user_id] = rec
-    return rec  # type: ignore[return-value]
-
-
-def check_budget(user_id: str) -> None:
-    rec = _get_budget_record(user_id)
-    budget = _monthly_budget()
-    if rec.spent_usd + PRICE_PER_REQUEST_USD > budget:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "error": "Monthly budget exceeded",
-                "user_id": user_id,
-                "spent_usd": round(rec.spent_usd, 6),
-                "monthly_budget_usd": budget,
-                "resets_at": "next month",
-            },
-        )
-
-
-def record_budget_usage(user_id: str) -> _BudgetRecord:
-    rec = _get_budget_record(user_id)
-    rec.request_count += 1
-    rec.spent_usd += PRICE_PER_REQUEST_USD
-    return rec
-
-
-def get_usage(user_id: str) -> dict:
-    rec = _get_budget_record(user_id)
-    budget = _monthly_budget()
-    return {
-        "user_id": user_id,
-        "month": rec.month,
-        "request_count": rec.request_count,
-        "spent_usd": round(rec.spent_usd, 6),
-        "monthly_budget_usd": budget,
-        "remaining_usd": round(max(0.0, budget - rec.spent_usd), 6),
-    }
-
 
 def _cors_origins() -> list[str]:
     base = [
@@ -260,6 +198,20 @@ class _LegacyAskRequest(BaseModel):
     user_id: str | None = None
 
 
+@app.get("/history")
+def history_endpoint(
+    request: Request,
+    user_id: str = Query("demo-user"),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+):
+    uid = _require_auth(request, user_id, x_api_key)
+    return {
+        "user_id": uid,
+        "chats": list_chats(user_id=uid),
+        "storage": storage_status()["backend"],
+    }
+
+
 @app.post("/ask")
 async def legacy_ask(
     body: _LegacyAskRequest,
@@ -284,7 +236,7 @@ async def legacy_ask(
         "storage": storage_status()["backend"],
         "rate_limit": {"limit": rate_limit_pm, "window_seconds": 60, "note": "per-user sliding window"},
         "budget": {
-            "spent_usd": budget_info["spent_usd"],
+            "estimated_cost_usd": budget_info["estimated_cost_usd"],
             "monthly_budget_usd": budget_info["monthly_budget_usd"],
             "remaining_usd": budget_info["remaining_usd"],
             "request_count": budget_info["request_count"],
@@ -581,7 +533,7 @@ async def chat(
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> ChatResponse:
     uid = _require_auth(request, req.user_id, x_api_key)
-    check_budget(uid)
+    ensure_budget_available(uid)
     message = req.message.strip()
     active = ensure_chat(req.chat_id, uid, first_message=message)
     if active is None:
@@ -603,7 +555,7 @@ async def chat(
         )
         add_message(chat_id, "user", message, uid)
         add_message(chat_id, "assistant", response.answer, uid, refused=True, reason=response.reason, evidence_level=response.evidence_level, confidence=response.confidence, safety=response.safety, follow_up_suggestions=response.follow_up_suggestions)
-        record_budget_usage(uid)
+        record_generation_usage(uid)
         return response
 
     saved_link_ids: list[str] = []
@@ -634,6 +586,7 @@ async def chat(
         response = ChatResponse(chat_id=chat_id, refused=True, reason="out_of_domain", answer=out_msg, sources=[], evidence_level="Ngoài phạm vi hỗ trợ", confidence=1.0)
         add_message(chat_id, "user", message, uid)
         add_message(chat_id, "assistant", response.answer, uid, refused=True, reason=response.reason, evidence_level=response.evidence_level, confidence=response.confidence, safety=response.safety, follow_up_suggestions=response.follow_up_suggestions)
+        record_generation_usage(uid)
         return response
 
     intent = route_intent(message)
@@ -677,8 +630,9 @@ async def chat(
         confidence=response.confidence,
         safety=response.safety,
         follow_up_suggestions=response.follow_up_suggestions,
+        citation_verification=response.citation_verification,
     )
-    record_budget_usage(uid)
+    record_generation_usage(uid, workflow.generation_usage)
     logger.info(json.dumps({"event": "chat", "user_id": uid, "chat_id": chat_id, "intent": intent.intent, "required_sources": intent.required_sources, "search_recommended": intent.needs_controlled_search, "agent_trace": workflow.trace, "sources_count": len(normalized)}, ensure_ascii=False))
     return response
 

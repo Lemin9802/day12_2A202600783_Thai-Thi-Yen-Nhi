@@ -8,6 +8,7 @@ load_dotenv(ROOT_DIR / ".env", override=False)
 
 import os
 import re
+from dataclasses import asdict, dataclass
 from typing import Any
 
 try:
@@ -17,6 +18,30 @@ except Exception:
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    answer: str
+    provider: str
+    model: str = ""
+    prompt_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    llm_called: bool = False
+
+    def usage_dict(self) -> dict[str, Any]:
+        return asdict(self) | {"answer": None}
+
+
+def _usage_value(usage: Any, *names: str) -> int:
+    for name in names:
+        if isinstance(usage, dict) and name in usage:
+            return int(usage.get(name) or 0)
+        value = getattr(usage, name, None)
+        if value is not None:
+            return int(value or 0)
+    return 0
 
 
 def _clean_raw_chunk_text(value: str) -> str:
@@ -199,15 +224,17 @@ def _gemini_settings() -> tuple[str, str] | None:
     return api_key, DEFAULT_GEMINI_MODEL or "gemini-3.1-flash-lite"
 
 
-def generate_answer(*args: Any, **kwargs: Any) -> str:
+def generate_answer_with_usage(*args: Any, **kwargs: Any) -> GenerationResult:
     question = kwargs.get("question") or kwargs.get("message") or kwargs.get("query") or (args[0] if args and isinstance(args[0], str) else "")
     retrieved = kwargs.get("retrieved") or kwargs.get("dataset_results") or kwargs.get("sources") or kwargs.get("context") or kwargs.get("matches") or []
     attachments = kwargs.get("attachments") or kwargs.get("attachment_contexts") or []
     language = "en" if str(kwargs.get("language") or kwargs.get("lang") or "vi").lower().startswith("en") else "vi"
-    if _is_identity_question(question): return _identity_answer(language)
+    if _is_identity_question(question):
+        return GenerationResult(_identity_answer(language), provider="deterministic")
     retrieved_list, attachment_list = _as_list(retrieved), _as_list(attachments)
     settings = _gemini_settings()
-    if not settings: return _fallback_answer(question, retrieved_list, attachment_list, language)
+    if not settings:
+        return GenerationResult(_fallback_answer(question, retrieved_list, attachment_list, language), provider="fallback")
     instructions = (
         "You are MaiThuyLaw AI. Use only controlled sources. Never invent legal rules, sanctions, article numbers, document names, or citations. Cite only numeric source IDs such as [1] or [1,2]. Do not expose technical internals."
         if language == "en" else
@@ -219,9 +246,26 @@ def generate_answer(*args: Any, **kwargs: Any) -> str:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(model=model, contents=prompt, config={"temperature": 0.2, "max_output_tokens": 900})
         answer = _clean_answer(getattr(response, "text", "") or "")
+        usage = getattr(response, "usage_metadata", None)
+        prompt_tokens = _usage_value(usage, "prompt_token_count", "prompt_tokens")
+        output_tokens = _usage_value(usage, "candidates_token_count", "output_tokens")
+        total_tokens = _usage_value(usage, "total_token_count", "total_tokens") or prompt_tokens + output_tokens
         if answer:
-            if _is_sanction_question(question) and not attachment_list and not _has_direct_sanction_evidence(question, retrieved_list): return _insufficient_sanction_answer(language)
-            return answer
+            if _is_sanction_question(question) and not attachment_list and not _has_direct_sanction_evidence(question, retrieved_list):
+                answer = _insufficient_sanction_answer(language)
+            return GenerationResult(
+                answer=answer,
+                provider="gemini",
+                model=model,
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                llm_called=True,
+            )
     except Exception:
         pass
-    return _fallback_answer(question, retrieved_list, attachment_list, language)
+    return GenerationResult(_fallback_answer(question, retrieved_list, attachment_list, language), provider="fallback", model=model)
+
+
+def generate_answer(*args: Any, **kwargs: Any) -> str:
+    return generate_answer_with_usage(*args, **kwargs).answer

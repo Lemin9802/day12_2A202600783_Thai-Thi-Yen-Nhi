@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from backend.agent import generate_answer
+from backend.agent import generate_answer_with_usage
 from backend.citations import CitationVerification, verify_citations
 from backend.dataset import retrieve
 from backend.guards import output_safety_check
@@ -44,6 +44,7 @@ class WorkflowState:
     citation_verification: CitationVerification | None = None
     realtime_unavailable: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
+    generation_usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def source_count(self) -> int:
@@ -161,14 +162,23 @@ class AnswerSynthesisAgent:
             state.answer = realtime_unavailable_answer(state.language)
             mode = "realtime_unavailable"
         else:
-            state.answer = generate_answer(
+            generation = generate_answer_with_usage(
                 message=state.message,
                 dataset_results=state.dataset_results,
                 attachments=state.attachments,
                 language=state.language,
             )
-            mode = "grounded_generation"
-        state.record(self.name, started, status="ok", mode=mode, answer_chars=len(state.answer))
+            state.answer = generation.answer
+            state.generation_usage = {
+                "provider": generation.provider,
+                "model": generation.model,
+                "prompt_tokens": generation.prompt_tokens,
+                "output_tokens": generation.output_tokens,
+                "total_tokens": generation.total_tokens,
+                "llm_called": generation.llm_called,
+            }
+            mode = generation.provider
+        state.record(self.name, started, status="ok", mode=mode, answer_chars=len(state.answer), usage=state.generation_usage)
         return state
 
 
