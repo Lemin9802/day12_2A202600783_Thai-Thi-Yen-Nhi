@@ -1,11 +1,12 @@
-# ── Secrets ──────────────────────────────────────────────
+# Secrets
 .env
 .env.local
 .env.production
 .env.*
 !.env.example
+!maithuylaw-ai/.env.example
 
-# ── Python ──────────────────────────��────────────────────
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -16,26 +17,26 @@ dist/
 build/
 .pytest_cache/
 
-# ── Virtual environments ──────────────────────────────────
+# Virtual environments
 venv/
 env/
 .venv/
 
-# ── IDE ──────────────────────────────��────────────────────
+# IDE and OS
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# ── OS ────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# ── Docker volumes (local dev) ─────────────────────��──────
-data/
-volumes/
+# Runtime state and generated product artifacts
 data/runtime/
-frontend/node_modules/
-frontend/dist/
-frontend/.env.local
-.env.*.local
+maithuylaw-ai/data/runtime/
+maithuylaw-ai/data/maithuylaw_dataset/data/index/dense_index.npz
+maithuylaw-ai/frontend/node_modules/
+maithuylaw-ai/frontend/dist/
+maithuylaw-ai/frontend/.env.local
+*.sqlite
+*.db
+*.log

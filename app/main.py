@@ -43,7 +43,6 @@ except Exception:
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000)
     user_id: str | None = None
-    user_id: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -113,7 +112,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-
+    title=settings.app_name,
+    version=settings.app_version,
+    lifespan=lifespan,
 )
 
 @app.get("/", include_in_schema=False)

@@ -1,215 +1,179 @@
-# MaiThuyLaw AI
+# Day 12 Lab — Deployment: Đưa AI Agent Lên Cloud
 
-MaiThuyLaw AI is a production-oriented Vietnamese legal information assistant focused on drug-related law, public policy, and verified official news. It combines a deterministic multi-agent workflow, hybrid retrieval, citation verification, safety controls, persistent chat history, and token-based usage accounting.
+> **Student Name:** Thái Thị Yến Nhi  
+> **Student ID:** 2A202600783  
+> **Lab:** Day 12 — Hạ tầng Cloud và Deployment
 
-> The system provides legal information and source-grounded summaries. It does not replace advice from a qualified lawyer or an authoritative agency.
+Repository này trước hết là **bài nộp Day 12 Lab**. Các exercise, mission answers, final lab source code, deployment report và screenshot evidence được giữ ở đúng vị trí mà rubric và instructor guide yêu cầu.
 
-## What is implemented
+Repository đồng thời có một phần mở rộng độc lập là **MaiThuyLaw AI**. Phần mở rộng được tách hoàn toàn vào [`maithuylaw-ai/`](maithuylaw-ai/) để không thay thế hoặc làm mờ các deliverable của bài lab.
 
-- FastAPI application with `/ask`, `/api/chat`, `/health`, `/ready`, `/history`, and `/usage` APIs.
-- Intent-aware multi-agent workflow for retrieval, policy/news research, evidence merging, synthesis, citation verification, safety review, and final response preparation.
-- Hybrid retrieval using BM25 plus a deterministic 384-dimensional dense vector index, fused with Reciprocal Rank Fusion.
-- A controlled dataset containing legal, policy, and verified-news sources.
-- Claim-level citation validation for invalid source IDs, unsupported claims, and legal conclusions backed only by non-legal sources.
-- Gemini synthesis when configured, with an extractive and cited fallback when no model key is available.
-- Optional controlled search restricted to approved official or trusted domains and requiring explicit user consent.
-- API-key restricted mode or signed anonymous sessions for a public demo.
-- Redis-backed chat history, quotas, and token/cost accounting with local JSON fallback for development.
-- File and URL ingestion controls, official-domain allowlisting, size/type validation, and SSRF protection.
-- Docker and Railway configuration, CI release gates, retrieval evaluation, and smoke tests.
+> **MaiThuyLaw AI production extension:** xem [`maithuylaw-ai/README.md`](maithuylaw-ai/README.md).
 
-## Architecture
+---
 
-```mermaid
-flowchart TD
-    A[FastAPI request] --> B[Authentication and quota]
-    B --> C[Input safety and domain guard]
-    C --> D[Intent Router]
-    D --> E[Legal Retrieval Agent]
-    D --> F[Policy and News Research Agent]
-    E --> G[Evidence Merge Agent]
-    F --> G
-    G --> H[Answer Synthesis Agent]
-    H --> I[Citation Verification Agent]
-    I --> J[Safety Review Agent]
-    J --> K[Final Response Agent]
-    K --> L[Chat and usage persistence]
+## Điều hướng chấm bài
 
-    E --> M[BM25]
-    E --> N[Dense vector index]
-    M --> O[RRF fusion]
-    N --> O
-    O --> G
-```
+| Deliverable | Vị trí |
+|---|---|
+| Nội dung và yêu cầu lab | [`CODE_LAB.md`](CODE_LAB.md) |
+| Câu trả lời Part 1–6 | [`MISSION_ANSWERS.md`](MISSION_ANSWERS.md) |
+| Checklist nộp bài | [`DAY12_DELIVERY_CHECKLIST.md`](DAY12_DELIVERY_CHECKLIST.md) |
+| Hướng dẫn chấm | [`INSTRUCTOR_GUIDE.md`](INSTRUCTOR_GUIDE.md) |
+| Deployment report | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
+| Screenshot evidence | [`screenshots/`](screenshots/) |
+| Final lab source | [`app/`](app/) |
+| Reference complete lab | [`06-lab-complete/`](06-lab-complete/) |
+| Quick start | [`QUICK_START.md`](QUICK_START.md) |
+| Troubleshooting | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) |
 
-Detailed design: [`docs/architecture.md`](docs/architecture.md).
+## Rubric mapping
 
-## Dataset and retrieval
+Theo instructor guide, điểm số gồm:
 
-Current validated index:
+| Thành phần | Điểm | Bằng chứng |
+|---|---:|---|
+| Part 1–5: Exercises | 40 | `MISSION_ANSWERS.md` và các folder `01-` đến `05-` |
+| Part 6: Final Project | 60 | Root final app, Docker/Redis config, deployment report và screenshots |
+| **Tổng** | **100** | |
 
-| Metric | Value |
-|---|---:|
-| Chunks | 224 |
-| Documents | 27 |
-| Legal chunks | 182 |
-| Policy chunks | 14 |
-| News chunks | 28 |
-| Dense dimensions | 384 |
+Part 6 được đối chiếu như sau:
 
-The dense index is generated deterministically during Docker build or local validation and persisted at:
+| Nhóm tiêu chí | Điểm | Implementation |
+|---|---:|---|
+| Functionality | 20 | `/ask`, conversation history và error handling trong `app/` |
+| Docker & Configuration | 15 | Root `Dockerfile`, `docker-compose.yml`, `.env.example` |
+| Security | 20 | API key, rate limit, cost guard và environment-based secrets |
+| Reliability | 15 | `/health`, `/ready`, lifespan startup/shutdown và Redis history |
+| Deployment | 10 | `railway.toml`, `DEPLOYMENT.md` và screenshot evidence |
+
+## Nội dung từng phần
+
+| Part | Folder | Nội dung |
+|---:|---|---|
+| 1 | [`01-localhost-vs-production/`](01-localhost-vs-production/) | Dev vs production, 12-factor app, config và health checks |
+| 2 | [`02-docker/`](02-docker/) | Docker basics, multi-stage build và Docker Compose |
+| 3 | [`03-cloud-deployment/`](03-cloud-deployment/) | Railway, Render, Cloud Run và deployment workflow |
+| 4 | [`04-api-gateway/`](04-api-gateway/) | API key, rate limiting và cost protection |
+| 5 | [`05-scaling-reliability/`](05-scaling-reliability/) | Redis, stateless design, health/readiness và scaling |
+| 6 | [`06-lab-complete/`](06-lab-complete/) | Reference implementation tổng hợp |
+
+## Final lab application
+
+Rubric-facing implementation nằm ở root:
 
 ```text
-data/maithuylaw_dataset/data/index/dense_index.npz
+app/
+├── main.py
+├── config.py
+├── auth.py
+├── rate_limiter.py
+├── cost_guard.py
+└── ui.py
+
+utils/mock_llm.py
+Dockerfile
+docker-compose.yml
+requirements.txt
+.env.example
+railway.toml
 ```
 
-The small repository regression benchmark currently reports R@3, R@5, and MRR of `1.0` for both the BM25 baseline and the hybrid pipeline. This benchmark is a release regression set, not a claim of general legal-QA accuracy. See [`docs/retrieval-evaluation.md`](docs/retrieval-evaluation.md).
+Các endpoint chính:
 
-## Local setup
+| Method | Endpoint | Mục đích |
+|---|---|---|
+| `GET` | `/health` | Liveness và storage status |
+| `GET` | `/ready` | Readiness check |
+| `POST` | `/ask` | Protected agent endpoint |
+| `GET` | `/history` | Conversation history theo user |
+| `GET` | `/usage` | Monthly budget usage |
 
-Requirements:
+## Chạy final lab local
 
-- Python 3.12+
-- Node.js 20+
-- Redis is recommended for shared production persistence but optional for local development
+### Python
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cd frontend
-npm ci
-npm run build
-cd ..
-
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+export AGENT_API_KEY=local-dev-key
+export REDIS_URL=redis://localhost:6379/0
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Readiness:
+### Docker Compose
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+## Self-test nhanh
 
 ```bash
 curl http://localhost:8000/health
 curl http://localhost:8000/ready
 ```
 
-## Environment variables
-
-Copy `.env.example` to `.env.local` for local use. Do not commit real secrets.
-
-Required for model synthesis:
-
-```text
-GEMINI_API_KEY
-GEMINI_MODEL=gemini-3.1-flash-lite
-```
-
-Required for a persistent production deployment:
-
-```text
-MAITHUYLAW_SESSION_SECRET
-REDIS_URL
-MAITHUYLAW_ALLOWED_ORIGINS
-```
-
-Optional controls:
-
-```text
-MAITHUYLAW_API_KEY
-MAITHUYLAW_RATE_LIMIT_PER_MINUTE
-MAITHUYLAW_DAILY_LIMIT
-MONTHLY_BUDGET_USD
-MAITHUYLAW_INPUT_COST_PER_MILLION_USD
-MAITHUYLAW_OUTPUT_COST_PER_MILLION_USD
-MAITHUYLAW_REALTIME_ENABLED
-TAVILY_API_KEY
-```
-
-Controlled web search remains disabled unless both user consent and server configuration are present.
-
-## Main APIs
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/health` | Process and storage status |
-| `GET` | `/ready` | Dataset and runtime readiness |
-| `POST` | `/ask` | Compatibility Q&A endpoint |
-| `POST` | `/api/chat` | Main grounded chat workflow |
-| `GET` | `/history` | Compatibility chat-history endpoint |
-| `GET` | `/usage` | Persistent token and estimated-cost usage |
-| `GET/POST` | `/api/chats` | List or create chats |
-| `GET/PATCH/DELETE` | `/api/chats/{chat_id}` | Read, rename, or delete a chat |
-| `POST` | `/api/attachments/upload` | Validate and store an uploaded source |
-| `POST` | `/api/attachments/link` | Validate and store an approved URL |
-
-The OpenAPI UI is disabled in production by design. Request and response schemas are defined in `backend/schemas.py`.
-
-## Validation
+Không có API key phải bị từ chối:
 
 ```bash
-python -m compileall -q backend scripts tests
-python scripts/validate_dataset_manifest.py
-python scripts/evaluate_retrieval.py
-pytest -q
-
-cd frontend
-npm ci
-npm run build
-npm audit --audit-level=moderate
-cd ..
+curl -i -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Hello"}'
 ```
 
-Latest local validation recorded in this repository:
-
-```text
-29 tests passed
-manifest: 224 chunks / 27 documents
-retrieval regression: R@3=1.0, R@5=1.0, MRR=1.0
-frontend production build: passed
-npm audit: no moderate, high, or critical vulnerabilities
-```
-
-Docker build and container smoke testing are enforced in GitHub Actions. Local Docker validation was not performed in the authoring environment because Docker was unavailable there.
-
-## Deployment
-
-The repository uses a multi-stage non-root Docker image and Railway readiness path `/ready`.
+Có API key phải thành công:
 
 ```bash
-docker build -t maithuylaw-ai .
-docker run --rm -p 8000:8000 --env-file .env.local maithuylaw-ai
+curl -i -X POST http://localhost:8000/ask \
+  -H "X-API-Key: local-dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"lab-user","question":"Hello"}'
 ```
 
-Deployment guide: [`docs/deployment.md`](docs/deployment.md).
+## Deployment evidence
 
-## Safety and evidence contract
+Deployment report và bằng chứng của bài lab được giữ riêng tại:
 
-- Crime-enabling or evasion instructions are refused.
-- Out-of-domain questions are rejected.
-- Exact legal sanctions require direct legal evidence.
-- Claims with article numbers, penalties, imprisonment terms, or monetary amounts must carry valid citations.
-- Policy/news sources cannot replace legal authority for sanction claims.
-- Low-coverage or unsupported output becomes `Chưa đủ căn cứ`.
+- [`DEPLOYMENT.md`](DEPLOYMENT.md)
+- [`screenshots/01-railway-deploy-success.png`](screenshots/01-railway-deploy-success.png)
+- [`screenshots/02-public-health.png`](screenshots/02-public-health.png)
+- [`screenshots/03-public-auth.png`](screenshots/03-public-auth.png)
+- [`screenshots/04-public-ask-success.png`](screenshots/04-public-ask-success.png)
+- [`screenshots/05-docker-compose-redis.png`](screenshots/05-docker-compose-redis.png)
+- [`screenshots/06-rate-limit-429.png`](screenshots/06-rate-limit-429.png)
 
-See [`docs/safety-and-citations.md`](docs/safety-and-citations.md).
+Public URL trong `DEPLOYMENT.md` là deployment evidence tại thời điểm hoàn thành lab. Deployment mới của MaiThuyLaw AI được quản lý độc lập trong thư mục product.
 
-## Repository structure
+## Repository layout
 
 ```text
-backend/                         Production FastAPI and AI workflow
-frontend/                        Minimal React client
-data/maithuylaw_dataset/         Controlled RAG data and policy overlay
-scripts/                         Validation, evaluation, and smoke tests
-tests/                           Unit and integration tests
-docs/                            Architecture, safety, deployment, evidence
-.github/workflows/ci.yml         Production release gates
-01-...06-*/                      Original educational lab snapshots
+.
+├── 01-localhost-vs-production/
+├── 02-docker/
+├── 03-cloud-deployment/
+├── 04-api-gateway/
+├── 05-scaling-reliability/
+├── 06-lab-complete/
+├── app/                         # Final lab app
+├── utils/                       # Lab mock LLM
+├── screenshots/                 # Lab evidence
+├── maithuylaw-ai/               # Independent production extension
+├── MISSION_ANSWERS.md
+├── DEPLOYMENT.md
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── railway.toml
 ```
 
-## Known limitations
+## MaiThuyLaw AI extension
 
-- The checked-in retrieval benchmark is intentionally small and must be expanded before making quantitative quality claims.
-- The local dense encoder is deterministic and offline-friendly; it is not equivalent to a large neural embedding model.
-- Estimated model cost depends on configurable pricing variables and is not a provider invoice.
-- Live Railway verification requires project secrets and a deployed public URL.
-- Source freshness is limited unless controlled search is enabled and explicitly requested.
+MaiThuyLaw AI áp dụng các production concepts của Day 12 vào một domain application lớn hơn, nhưng có source code, dependencies, Dockerfile, tests và deployment configuration riêng.
+
+- Product overview: [`maithuylaw-ai/README.md`](maithuylaw-ai/README.md)
+- Technical docs: [`maithuylaw-ai/docs/`](maithuylaw-ai/docs/)
+- Product deployment guide: [`maithuylaw-ai/docs/deployment.md`](maithuylaw-ai/docs/deployment.md)

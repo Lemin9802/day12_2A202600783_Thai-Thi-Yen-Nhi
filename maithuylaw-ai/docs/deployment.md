@@ -1,3 +1,13 @@
+## Repository root directory
+
+This repository contains both the original Day 12 lab and the independent product extension. For the MaiThuyLaw AI Railway service, set the service **Root Directory** to:
+
+```text
+maithuylaw-ai
+```
+
+Railway will then use the product-local `Dockerfile`, `railway.toml`, `.env.example` and source tree. The repository-root deployment files remain reserved for the lab deliverable.
+
 # Deployment Guide
 
 ## Production services

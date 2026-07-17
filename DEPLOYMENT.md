@@ -1,5 +1,9 @@
 # Deployment Report
 
+> **Document scope:** This report and its screenshots are the deployment evidence for the Day 12 Lab. The independent MaiThuyLaw AI deployment is documented at [`maithuylaw-ai/docs/deployment.md`](maithuylaw-ai/docs/deployment.md).
+
+---
+
 ## Platform
 
 Final production-ready AI agent đã được deploy lên **Railway**.
@@ -347,75 +351,3 @@ Final deployment đã đạt các yêu cầu chính:
 - Screenshots evidence đã được lưu và link trong file này.
 
 Kết luận: final production-ready AI agent đã được deploy thành công lên Railway, có public URL để test, có Docker Compose local stack với Redis, có authentication, rate limiting, health checks và deployment evidence đầy đủ.
-
-<!-- MAITHUYLAW_UI_DEPLOYMENT_UPDATE_START -->
-
-## Deployment Update: Public Web UI
-
-The Railway deployment was updated to serve a simple web UI at the public root URL:
-
-```text
-https://day12-agent-railway-production.up.railway.app
-```
-
-Before this update, the root path returned raw JSON metadata. After the update, the root path serves the **MaiThuyLaw AI** web interface.
-
-### Updated behavior
-
-```text
-GET /
-→ MaiThuyLaw AI web chat UI
-
-GET /health
-→ backend health JSON
-
-POST /ask
-→ authenticated mock-agent response using X-API-Key
-```
-
-### Deployment method
-
-The Railway service is deployed through Railway CLI:
-
-```text
-railway link
-railway up
-```
-
-Linked target:
-
-```text
-Project: trustworthy-gratitude
-Environment: production
-Service: day12-agent-railway
-```
-
-### New evidence screenshots
-
-```text
-07-public-ui-home.png
-- Public Railway URL rendering the MaiThuyLaw AI web UI.
-
-08-public-ui-health.png
-- UI health check successfully calling GET /health.
-
-09-public-ui-auth-success.png
-- UI authenticated request successfully calling POST /ask with X-API-Key.
-```
-
-### Current architecture after UI update
-
-```mermaid
-flowchart LR
-    User[Browser User] --> UI[MaiThuyLaw AI Web UI]
-    UI --> Root[FastAPI GET /]
-    UI --> Health[FastAPI GET /health]
-    UI --> Ask[FastAPI POST /ask]
-    Ask --> Auth[X-API-Key Auth]
-    Auth --> MockAgent[Day 12 Mock Agent]
-    MockAgent --> Response[Answer in Chat UI]
-```
-
-This update improves the public demo experience while preserving the original Day 12 production endpoints, API-key authentication, rate limiting, health checks, and Railway deployment workflow.
-
-<!-- MAITHUYLAW_UI_DEPLOYMENT_UPDATE_END -->

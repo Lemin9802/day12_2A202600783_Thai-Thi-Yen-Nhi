@@ -1,20 +1,21 @@
 services:
-  agent:
+  app:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
-      APP_NAME: Day 12 Production Agent
+      APP_NAME: MaiThuyLaw AI
       APP_VERSION: 1.0.0
-      ENVIRONMENT: production
+      ENVIRONMENT: development
       PORT: 8000
       REDIS_URL: redis://redis:6379/0
-      AGENT_API_KEY: local-dev-key
-      RATE_LIMIT_PER_MINUTE: 10
+      LLM_PROVIDER: none
+      MAITHUYLAW_SESSION_SECRET: local-product-session-secret
+      MAITHUYLAW_RATE_LIMIT_PER_MINUTE: 10
+      MAITHUYLAW_DAILY_LIMIT: 500
       MONTHLY_BUDGET_USD: 10.0
-      LOG_LEVEL: INFO
     ports:
-      - "8000:8000"
+      - "8001:8000"
     depends_on:
       redis:
         condition: service_healthy
@@ -23,7 +24,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
     restart: unless-stopped
 
   redis:

@@ -1,5 +1,6 @@
 from fastapi.responses import HTMLResponse
 
+
 def render_home() -> HTMLResponse:
     html = r"""
 <!doctype html>
@@ -7,7 +8,7 @@ def render_home() -> HTMLResponse:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MaiThuyLaw AI</title>
+  <title>Day 12 Production Agent</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -76,10 +77,7 @@ def render_home() -> HTMLResponse:
       outline: none;
       font: inherit;
     }
-    textarea {
-      min-height: 104px;
-      resize: vertical;
-    }
+    textarea { min-height: 104px; resize: vertical; }
     button {
       border: 0;
       background: linear-gradient(135deg, #22c55e, #14b8a6);
@@ -116,10 +114,7 @@ def render_home() -> HTMLResponse:
       gap: 12px;
       align-items: center;
     }
-    .status {
-      color: var(--muted);
-      font-size: 13px;
-    }
+    .status { color: var(--muted); font-size: 13px; }
     .messages {
       flex: 1;
       padding: 22px;
@@ -183,10 +178,10 @@ def render_home() -> HTMLResponse:
   <main class="app">
     <aside class="sidebar">
       <div class="brand">
-        <div class="logo">ML</div>
+        <div class="logo">D12</div>
         <div>
-          <h1>MaiThuyLaw AI</h1>
-          <div class="subtitle">Trợ lý AI tra cứu pháp luật, chính sách và tin tức liên quan đến ma túy.</div>
+          <h1>Day 12 Production Agent</h1>
+          <div class="subtitle">Demo production agent cho bài lab cloud deployment.</div>
         </div>
       </div>
 
@@ -199,7 +194,7 @@ def render_home() -> HTMLResponse:
       <button onclick="checkHealth()">Check health</button>
 
       <div class="hint">
-        Demo UI đang gọi endpoint <b>/ask</b> của Day12 mock agent. Sau này chỉ cần thay backend agent thật, UI vẫn dùng được.
+        Demo UI gọi endpoint <b>/ask</b> của final lab mock agent để kiểm tra authentication, rate limiting, history và budget guard.
       </div>
     </aside>
 
@@ -209,11 +204,11 @@ def render_home() -> HTMLResponse:
           <b>Chat</b>
           <div class="status" id="status">Ready</div>
         </div>
-        <span class="pill">Mock Agent</span>
+        <span class="pill">Lab Mock Agent</span>
       </div>
 
       <div class="messages" id="messages">
-        <div class="msg bot">Xin chào, mình là MaiThuyLaw AI. Hãy nhập API key rồi đặt câu hỏi để test backend đã deploy.</div>
+        <div class="msg bot">Xin chào. Hãy nhập API key rồi đặt câu hỏi để kiểm tra final lab backend.</div>
       </div>
 
       <div class="composer">
@@ -251,7 +246,7 @@ def render_home() -> HTMLResponse:
         const res = await fetch("/health");
         const data = await res.json();
         statusEl.textContent = "Health: " + (data.status || "ok");
-        addMessage("Health check OK:\\n" + JSON.stringify(data, null, 2), "bot");
+        addMessage("Health check OK:\n" + JSON.stringify(data, null, 2), "bot");
       } catch (err) {
         statusEl.textContent = "Health check failed";
         addMessage("Không gọi được /health: " + err.message, "error");
@@ -279,7 +274,7 @@ def render_home() -> HTMLResponse:
         try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
         if (!res.ok) {
-          addMessage("Error " + res.status + ":\\n" + JSON.stringify(data, null, 2), "error");
+          addMessage("Error " + res.status + ":\n" + JSON.stringify(data, null, 2), "error");
         } else {
           const answer = data.answer || data.response || JSON.stringify(data, null, 2);
           addMessage(answer, "bot");
