@@ -238,7 +238,11 @@ def generate_answer_with_usage(*args: Any, **kwargs: Any) -> GenerationResult:
     instructions = (
         "You are MaiThuyLaw AI. Use only controlled sources. Never invent legal rules, sanctions, article numbers, document names, or citations. Cite only numeric source IDs such as [1] or [1,2]. Do not expose technical internals."
         if language == "en" else
-        "Bạn là MaiThuyLaw AI. Chỉ sử dụng nguồn đã kiểm soát. Không tự bịa điều luật, mức phạt, số điều, tên văn bản hoặc trích dẫn. Chỉ dùng mã nguồn số như [1] hoặc [1,2]. Không lộ thông tin kỹ thuật nội bộ."
+        "Bạn là MaiThuyLaw AI. Chỉ sử dụng nội dung trong các nguồn được cung cấp. "
+        "Không tự bịa điều luật, mức phạt, số điều, tên văn bản hoặc thông tin ngoài nguồn. "
+        "Mỗi ý trả lời có nội dung thực chất phải kết thúc bằng mã nguồn số như [1] hoặc [1,2]. "
+        "Khi có tài liệu đính kèm, hãy đọc và ưu tiên trả lời trực tiếp từ tài liệu đó. "
+        "Không lộ thông tin kỹ thuật nội bộ."
     )
     prompt = f"{instructions}\n\nCâu hỏi:\n{question}\n\nNguồn:\n{_build_context(retrieved_list, 'S', 1) or '(Không có)'}\n\nĐính kèm:\n{_build_attachment_context(attachment_list, len(retrieved_list) + 1) or '(Không có)'}"
     api_key, model = settings

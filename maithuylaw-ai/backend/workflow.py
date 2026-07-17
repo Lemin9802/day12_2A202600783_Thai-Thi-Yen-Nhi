@@ -246,7 +246,6 @@ class CitationVerificationAgent:
         if (
             state.attachment_mode == "attachment_only"
             and not verification.invalid_citations
-            and not verification.unsupported_claims
         ):
             verification.legal_claims_without_legal_source = []
             verification.valid = True
