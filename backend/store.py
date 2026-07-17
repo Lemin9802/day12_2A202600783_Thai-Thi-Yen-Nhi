@@ -262,7 +262,7 @@ def add_message(
             "content": content,
             "created_at": _now(),
         }
-        for key in ("sources", "refused", "reason", "evidence_level", "confidence", "safety", "follow_up_suggestions", "attachments"):
+        for key in ("sources", "refused", "reason", "evidence_level", "confidence", "safety", "follow_up_suggestions", "citation_verification", "attachments"):
             if key in metadata and metadata[key] is not None:
                 created[key] = metadata[key]
         messages = chat.setdefault("messages", [])

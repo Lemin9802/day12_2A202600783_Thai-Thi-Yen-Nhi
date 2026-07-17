@@ -105,6 +105,7 @@ class ChatResponse(BaseModel):
     confidence: float | None = None
     safety: dict = Field(default_factory=dict)
     follow_up_suggestions: list[str] = Field(default_factory=list)
+    citation_verification: dict = Field(default_factory=dict)
 
     def model_post_init(self, __context) -> None:
         self.answer = clean_user_text(self.answer) or ""

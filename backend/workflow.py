@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from backend.agent import generate_answer
+from backend.citations import CitationVerification, verify_citations
 from backend.dataset import retrieve
 from backend.guards import output_safety_check
 from backend.intent import IntentResult
@@ -40,6 +41,7 @@ class WorkflowState:
     dataset_results: list[dict] = field(default_factory=list)
     answer: str = ""
     blocked_reason: str | None = None
+    citation_verification: CitationVerification | None = None
     realtime_unavailable: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
 
@@ -170,6 +172,34 @@ class AnswerSynthesisAgent:
         return state
 
 
+class CitationVerificationAgent:
+    name = "citation_verification"
+
+    def run(self, state: WorkflowState) -> WorkflowState:
+        started = time.perf_counter()
+        verification = verify_citations(
+            state.answer,
+            state.dataset_results,
+            state.attachments,
+            intent=state.intent.intent,
+        )
+        state.citation_verification = verification
+        if not verification.valid:
+            state.blocked_reason = "Citation verification failed"
+            state.answer = SAFE_FALLBACK_EN if state.language == "en" else SAFE_FALLBACK_VI
+            state.dataset_results = []
+        state.record(
+            self.name,
+            started,
+            status="ok",
+            valid=verification.valid,
+            coverage=verification.coverage,
+            unsupported_claims=len(verification.unsupported_claims),
+            invalid_citations=verification.invalid_citations,
+        )
+        return state
+
+
 class SafetyReviewAgent:
     name = "safety_review"
 
@@ -209,6 +239,7 @@ class LegalAnswerWorkflow:
             PolicyNewsResearchAgent(),
             EvidenceMergeAgent(),
             AnswerSynthesisAgent(),
+            CitationVerificationAgent(),
             SafetyReviewAgent(),
             FinalResponseAgent(),
         ]

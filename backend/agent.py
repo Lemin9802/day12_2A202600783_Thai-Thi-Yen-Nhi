@@ -101,6 +101,8 @@ def _is_low_value_for_question(question: str, sentence: str) -> bool:
 
 def _clean_context_text(text: str) -> str:
     text = _strip_internal_context_labels(_clean_raw_chunk_text(text))
+    if "**Content level:**" in text:
+        text = re.sub(r"(?is)^.*?\*\*Content level:\*\*.*?(?:article text|source card)\.\s*", "", text, count=1)
     text = re.sub(r"Do not use for[^.]+\.?", "", text, flags=re.I)
     text = re.sub(r"Không dùng thay cho căn cứ pháp luật chính thức\s*-?", "", text, flags=re.I)
     return text.strip()
@@ -135,17 +137,17 @@ def _insufficient_sanction_answer(language: str) -> str:
     return "Mình chưa thấy căn cứ pháp lý đủ trực tiếp trong nguồn hiện có để kết luận chính xác mức xử lý. Bạn có thể gửi số điều, tên văn bản hoặc link nguồn chính thống để mình đối chiếu."
 
 
-def _build_context(items: list[Any], prefix: str) -> str:
+def _build_context(items: list[Any], prefix: str, start_index: int = 1) -> str:
     blocks = []
-    for index, item in enumerate(items[:8], 1):
+    for index, item in enumerate(items[:8], start_index):
         body = _clean_context_text(_text_from_item(item))
         if body: blocks.append(f"[{index}] {_source_title(item, f'Nguồn {index}')}\n{body[:1800]}")
     return "\n\n".join(blocks)
 
 
-def _build_attachment_context(items: list[Any]) -> str:
+def _build_attachment_context(items: list[Any], start_index: int = 1) -> str:
     blocks = []
-    for index, item in enumerate(items[:4], 1):
+    for index, item in enumerate(items[:4], start_index):
         if not isinstance(item, dict) or item.get("verdict") != "accepted": continue
         preview = _clean_context_text(item.get("preview") or item.get("text") or item.get("content") or "")
         if preview: blocks.append(f"[{index}] {item.get('name') or item.get('filename') or f'Đính kèm {index}'}\n{preview[:1800]}")
@@ -162,19 +164,32 @@ def _sentence_candidates(text: str) -> list[str]:
 
 
 def _fallback_answer(question: str, retrieved: list[Any], attachments: list[Any], language: str) -> str:
-    if _is_sanction_question(question) and not attachments and not _has_direct_sanction_evidence(question, retrieved): return _insufficient_sanction_answer(language)
-    context = _build_attachment_context(attachments) or _build_context(retrieved, "S")
-    snippets = []
-    for block in context.split("\n\n")[:5]:
-        for sentence in _sentence_candidates(" ".join(block.splitlines()[1:])):
-            if not _is_low_value_for_question(question, sentence) and sentence not in snippets: snippets.append(sentence)
-            if len(snippets) >= 4: break
-        if len(snippets) >= 4: break
-    if not snippets:
+    if _is_sanction_question(question) and not attachments and not _has_direct_sanction_evidence(question, retrieved):
+        return _insufficient_sanction_answer(language)
+    candidates: list[tuple[int, str]] = []
+    if attachments:
+        source_items = list(enumerate(attachments[:4], len(retrieved) + 1))
+        for source_id, item in source_items:
+            if not isinstance(item, dict) or item.get("verdict") != "accepted":
+                continue
+            text = item.get("preview") or item.get("text") or item.get("content") or ""
+            for sentence in _sentence_candidates(text):
+                if not _is_low_value_for_question(question, sentence):
+                    candidates.append((source_id, sentence))
+                    break
+    else:
+        for source_id, item in enumerate(retrieved[:5], 1):
+            for sentence in _sentence_candidates(_text_from_item(item)):
+                if not _is_low_value_for_question(question, sentence):
+                    candidates.append((source_id, sentence))
+                    break
+    candidates = candidates[:4]
+    if not candidates:
         return "I do not yet see enough direct basis in the available sources." if language == "en" else "Mình chưa thấy căn cứ đủ trực tiếp trong nguồn hiện có để trả lời chắc chắn. Bạn có thể hỏi cụ thể hơn hoặc gửi link/số điều từ nguồn chính thống để mình đối chiếu."
+    bullets = "\n".join(f"- {sentence} [{source_id}]" for source_id, sentence in candidates)
     if language == "en":
-        return "## Brief answer\nI found related sources.\n\n## Key points\n" + "\n".join(f"- {s}" for s in snippets) + "\n\n## Note\nCheck the original document for a concrete case."
-    return "## Tóm tắt ngắn\nMình tìm thấy một số nguồn liên quan.\n\n## Điểm chính\n" + "\n".join(f"- {s}" for s in snippets) + "\n\n## Lưu ý\nVới trường hợp cụ thể, bạn nên đối chiếu văn bản gốc hoặc hỏi cơ quan có thẩm quyền."
+        return "## Brief answer\nI found related controlled sources.\n\n## Key points\n" + bullets + "\n\n## Note\nCheck the original document for a concrete case."
+    return "## Tóm tắt ngắn\nMình tìm thấy các nguồn được kiểm soát có liên quan.\n\n## Điểm chính\n" + bullets + "\n\n## Lưu ý\nVới trường hợp cụ thể, bạn nên đối chiếu văn bản gốc hoặc hỏi cơ quan có thẩm quyền."
 
 
 def _gemini_settings() -> tuple[str, str] | None:
@@ -198,7 +213,7 @@ def generate_answer(*args: Any, **kwargs: Any) -> str:
         if language == "en" else
         "Bạn là MaiThuyLaw AI. Chỉ sử dụng nguồn đã kiểm soát. Không tự bịa điều luật, mức phạt, số điều, tên văn bản hoặc trích dẫn. Chỉ dùng mã nguồn số như [1] hoặc [1,2]. Không lộ thông tin kỹ thuật nội bộ."
     )
-    prompt = f"{instructions}\n\nCâu hỏi:\n{question}\n\nNguồn:\n{_build_context(retrieved_list, 'S') or '(Không có)'}\n\nĐính kèm:\n{_build_attachment_context(attachment_list) or '(Không có)'}"
+    prompt = f"{instructions}\n\nCâu hỏi:\n{question}\n\nNguồn:\n{_build_context(retrieved_list, 'S', 1) or '(Không có)'}\n\nĐính kèm:\n{_build_attachment_context(attachment_list, len(retrieved_list) + 1) or '(Không có)'}"
     api_key, model = settings
     try:
         client = genai.Client(api_key=api_key)

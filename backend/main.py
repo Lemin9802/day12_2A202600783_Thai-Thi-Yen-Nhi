@@ -653,12 +653,17 @@ async def chat(
     )
     dataset_sources = [_source_label(item, index) for index, item in enumerate(workflow.dataset_results, start=1)]
     attachment_sources = [_attachment_source(item, index) for index, item in enumerate(attachments, start=1)]
-    normalized = _normalize_response_sources(attachment_sources + dataset_sources)
+    normalized = _normalize_response_sources(dataset_sources + attachment_sources)
     safe_answer = _reduce_citation_spam(_normalize_citations(workflow.answer, normalized), normalized)
     if workflow.blocked_reason:
         logger.warning(json.dumps({"event": "output_safety_block", "reason": workflow.blocked_reason, "chat_id": chat_id}, ensure_ascii=False))
         normalized = []
-    response = ChatResponse(chat_id=chat_id, answer=safe_answer, sources=normalized)
+    response = ChatResponse(
+        chat_id=chat_id,
+        answer=safe_answer,
+        sources=normalized,
+        citation_verification=workflow.citation_verification.to_dict() if workflow.citation_verification else {},
+    )
     add_message(chat_id, "user", message, uid, attachments=[item.get("id") for item in attachments])
     add_message(
         chat_id,
